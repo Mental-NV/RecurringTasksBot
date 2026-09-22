@@ -10,7 +10,7 @@ simultaneously without sharing schedules or webhooks.
 | Storage | Dev account, direct HTTPS | Prod account (business + Durable + deployment) |
 | Business table | `RecurringTasks` (dev) | `RecurringTasks` (prod) |
 | Task hub | `RecurringTasksDev` | `RecurringTasksProd` (never rename) |
-| Webhook | HTTPS tunnel to local host | Deployed app `https://<app>.azurewebsites.net/api/webhook` |
+| Webhook | HTTPS tunnel to local host | `https://func-recurringtasks-prod.azurewebsites.net/api/webhook` |
 
 The app exposes one anonymous HTTP trigger at route `api/webhook`; the
 `X-Telegram-Bot-Api-Secret-Token` header is mandatory.
@@ -42,7 +42,7 @@ The app exposes one anonymous HTTP trigger at route `api/webhook`; the
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
 | `AZURE_RESOURCE_GROUP` | `rg-recurringtasksbot` |
 | `FUNCTION_APP_NAME` | `func-recurringtasks-prod` |
-| `PRODUCTION_WEBHOOK_URL` | `https://<FUNCTION_APP_NAME>.azurewebsites.net/api/webhook`, i.e. `https://func-recurringtasks-prod.azurewebsites.net/api/webhook` |
+| `PRODUCTION_WEBHOOK_URL` | `https://func-recurringtasks-prod.azurewebsites.net/api/webhook` |
 
 `PRODUCTION_WEBHOOK_URL` is constructed from `FUNCTION_APP_NAME`, and
 that name is global DNS (`<name>.azurewebsites.net`), so check it is free
