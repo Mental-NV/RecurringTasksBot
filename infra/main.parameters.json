@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "switzerlandnorth" },
+    "functionAppName": { "value": "func-recurringtasks-prod" },
+    "planName": { "value": "plan-recurringtasks-prod" },
+    "storageAccountName": { "value": "prodrecurringtasksbot" },
+    "taskHubName": { "value": "RecurringTasksProd" },
+    "tableName": { "value": "RecurringTasks" },
+    "expectedBotId": { "value": "0" },
+    "webhookUrl": { "value": "https://func-recurringtasks-prod.azurewebsites.net/api/webhook" }
+  }
+}

@@ -1,0 +1,10 @@
+bin/
+obj/
+out/
+publish/
+app.zip
+local.settings.json
+TestResults/
+.vs/
+.idea/
+*.user

@@ -1,0 +1,15 @@
+{
+  "version": "2.0",
+  "logging": {
+    "logLevel": {
+      "default": "Information",
+      "Host.Triggers.DurableTask": "Warning"
+    }
+  },
+  "extensions": {
+    "durableTask": {
+      "maxConcurrentOrchestratorFunctions": 10,
+      "maxConcurrentActivityFunctions": 20
+    }
+  }
+}
