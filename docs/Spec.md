@@ -63,11 +63,11 @@ Operation states are `starting`, `active`, `failed`, and `deleted`. Use ETags an
 
 | Environment variable | Value to supply | Development: local macOS | Production: GitHub Environment `production` |
 | --- | --- | --- | --- |
-| `Telegram__BotToken` | Bot token issued by BotFather. | Export the development bot token in the launch environment. | Store the production bot token as an Environment secret; map to this variable in deployment steps. |
-| `Telegram__WebhookSecret` | Random secret of 32–64 characters using letters, digits, `_`, or `-`. | Export a development-only value. | Store a separate production value as an Environment secret; map to this variable. |
-| `AzureWebJobsStorage` | Full account-key connection string. | Export the development storage connection string. | Store the production storage connection string as an Environment secret; map to this variable. |
+| `RecurringTasksBot__Telegram__BotToken` | Bot token issued by BotFather. | Export the development bot token in the launch environment. | Store the production bot token as an Environment secret; map to this variable in deployment steps. |
+| `RecurringTasksBot__Telegram__WebhookSecret` | Random secret of 32–64 characters using letters, digits, `_`, or `-`. | Export a development-only value. | Store a separate production value as an Environment secret; map to this variable. |
+| `RecurringTasksBot__AzureWebJobsStorage` | Full account-key connection string. | Export the development storage connection string. | Store the production storage connection string as an Environment secret; map to this variable. |
 
-In each environment, the application uses `AzureWebJobsStorage` for both business Table Storage access and the Durable/Functions backend. Deployment copies only the production values into Function App settings and reuses the production storage connection string for `WEBSITE_CONTENTAZUREFILECONNECTIONSTRING`. No separately supplied Azure Files credential is needed.
+In each environment, the application uses `RecurringTasksBot__AzureWebJobsStorage` for both business Table Storage access and the Durable/Functions backend. Deployment copies only the production values into Function App settings and reuses the production storage connection string for `WEBSITE_CONTENTAZUREFILECONNECTIONSTRING`. No separately supplied Azure Files credential is needed.
 
 GitHub deploys through Azure OIDC federation scoped to the `production` Environment. Configure the GitHub-to-Azure trust and production deployment permissions before the first deployment; local Azure administration uses `az login`. Neither requires an Azure client-secret environment variable. Never commit or log secret values, connection strings, or Telegram API URLs containing the bot token. Validate required variables by presence without printing their values.
 
