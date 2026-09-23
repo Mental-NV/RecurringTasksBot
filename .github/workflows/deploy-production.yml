@@ -1,0 +1,58 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build and publish
+        run: |
+          dotnet publish src/RecurringTasksBot/RecurringTasksBot.csproj \
+            --configuration Release --output ./publish
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy infrastructure (existing storage account)
+        uses: azure/arm-deploy@v2
+        with:
+          scope: resourcegroup
+          resourceGroupName: ${{ vars.AZURE_RESOURCE_GROUP }}
+          template: infra/main.bicep
+          parameters: >
+            infra/main.parameters.json
+            storageConnectionString=${{ secrets.RecurringTasksBot__AzureWebJobsStorage }}
+            telegramBotToken=${{ secrets.RecurringTasksBot__Telegram__BotToken }}
+            telegramWebhookSecret=${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
+      - name: Deploy app package
+        run: |
+          cd publish && zip -r ../app.zip . && cd ..
+          az functionapp deployment source config-zip \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.FUNCTION_APP_NAME }}" \
+            --src app.zip
+      - name: Register production webhook
+        env:
+          BOT_TOKEN: ${{ secrets.RecurringTasksBot__Telegram__BotToken }}
+          WEBHOOK_SECRET: ${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
+          WEBHOOK_URL: ${{ vars.PRODUCTION_WEBHOOK_URL }}
+        run: |
+          response=$(curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=${WEBHOOK_URL}" \
+            --data-urlencode "secret_token=${WEBHOOK_SECRET}" \
+            --data-urlencode "allowed_updates=[\"message\"]")
+          echo "$response" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('ok', False) else 1)"
