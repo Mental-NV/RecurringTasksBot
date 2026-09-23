@@ -61,14 +61,21 @@ update it in `FUNCTION_APP_NAME`, `PRODUCTION_WEBHOOK_URL`,
 
 ## Local development
 
+Prerequisites (macOS):
+
+```sh
+brew tap azure/functions
+brew install azure-functions-core-tools@4   # provides `func`
+brew install cloudflare/cloudflare/cloudflared  # for the tunnel option
+```
+
+`./scripts/launch-local.sh` checks for `func` and stops with install
+instructions if it is missing.
+
 Telegram cannot reach `localhost`, so expose the local Functions host
 (default `http://localhost:7071`) through an HTTPS tunnel. Use
 Cloudflare's quick tunnel: it needs no account and no additional
 application secret.
-
-```sh
-brew install cloudflare/cloudflare/cloudflared
-```
 
 Run in separate terminals:
 
@@ -97,6 +104,26 @@ The launch script selects the Development profile, validates the storage
 account name against the connection string and the token against the
 expected dev bot ID, and refuses to start on mismatch. It never touches
 production. Secrets are validated by presence only, never printed.
+
+### Alternative: local polling, no tunnel
+
+If the tunnel doesn't work in your network (e.g. VPN breaks DNS), use
+`scripts/poll-dev.sh` instead of `register-webhook-dev.sh`. It long-polls
+`getUpdates` and forwards each update to the local host, exercising the
+exact same webhook code path (`POST /api/webhook` with the secret
+header). No tunnel, no inbound connections, no firewall changes.
+
+```sh
+./scripts/launch-local.sh
+./scripts/poll-dev.sh            # --port 7072 if the host runs elsewhere
+```
+
+The poller verifies the token belongs to the development bot, deletes
+any webhook on it (Telegram won't queue `getUpdates` while a webhook is
+set), and resumes from `/tmp/recurringtasksbot-poll-offset` on restart.
+Use `--drop-pending` to discard updates queued while you were away.
+Production is unaffected: it always uses webhooks via the deploy
+workflow.
 
 ## Production deployment
 

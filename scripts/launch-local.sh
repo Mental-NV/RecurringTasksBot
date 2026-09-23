@@ -63,5 +63,13 @@ export ASPNETCORE_ENVIRONMENT=Development
 export AZURE_FUNCTIONS_ENVIRONMENT=Development
 export AzureFunctionsJobHost__extensions__durableTask__hubName="RecurringTasksDev"
 
+if ! command -v func >/dev/null 2>&1; then
+  echo "Azure Functions Core Tools ('func') not found." >&2
+  echo "Install it first (macOS):" >&2
+  echo "  brew tap azure/functions" >&2
+  echo "  brew install azure-functions-core-tools@4" >&2
+  exit 1
+fi
+
 echo "Starting Functions host (Development). Press Ctrl+C to stop."
 func start
