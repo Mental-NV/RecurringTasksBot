@@ -1,4 +1,4 @@
-# Recurring Tasks Bot — MVP Specification
+# Recurring Tasks Bot — Phase 1 MVP Specification
 
 ## Purpose and stack
 
