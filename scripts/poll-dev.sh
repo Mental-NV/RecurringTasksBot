@@ -3,16 +3,19 @@
 # Long-polls Telegram getUpdates and forwards each update to the local
 # Functions host, exercising the exact same webhook code path as production.
 # No tunnel needed. Refuses to run with the production bot token.
-# Usage: ./scripts/poll-dev.sh [--drop-pending] [--port 7071]
+# Usage: ./scripts/poll-dev.sh [--drop-pending] [--port 7071] [--timeout 50]
+# Lower --timeout (e.g. 20) when a VPN or middlebox resets long-held connections.
 set -euo pipefail
 
 DROP_PENDING="false"
 PORT="7071"
+TIMEOUT="50"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --drop-pending) DROP_PENDING="true"; shift ;;
     --port) PORT="${2:-}"; shift 2 ;;
+    --timeout) TIMEOUT="${2:-}"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -35,7 +38,7 @@ if [ "$ACTUAL_BOT_ID" = "$PROD_BOT_ID" ] && [ "$PROD_BOT_ID" != "0" ]; then
   echo "Token belongs to the production bot. Refusing." >&2; exit 1
 fi
 
-export POLL_DROP_PENDING="$DROP_PENDING" POLL_PORT="$PORT" POLL_API_BASE="$API_BASE"
+export POLL_DROP_PENDING="$DROP_PENDING" POLL_PORT="$PORT" POLL_API_BASE="$API_BASE" POLL_TIMEOUT="$TIMEOUT"
 echo "Polling as dev bot $ACTUAL_BOT_ID, forwarding to http://localhost:${PORT}/api/webhook. Ctrl+C to stop."
 exec python3 - <<'EOF'
 import json
@@ -59,7 +62,7 @@ def api(method, payload):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=70) as resp:
+    with urllib.request.urlopen(req, timeout=int(os.environ.get("POLL_TIMEOUT", "50")) + 20) as resp:
         return json.loads(resp.read().decode())
 
 
@@ -103,7 +106,7 @@ if not drop_resp.get("ok"):
 offset = load_offset()
 while True:
     try:
-        resp = api("getUpdates", {"offset": offset, "timeout": 50,
+        resp = api("getUpdates", {"offset": offset, "timeout": int(os.environ["POLL_TIMEOUT"]),
                                   "allowed_updates": ["message"]})
     except OSError as e:
         print(f"getUpdates failed: {e}; retrying...", flush=True)

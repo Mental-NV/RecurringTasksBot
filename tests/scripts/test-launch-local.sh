@@ -31,14 +31,14 @@ grep -q "brew install azure-functions-core-tools" "$SHIM/out1.txt" \
   || { echo "FAIL: missing install guidance"; cat "$SHIM/out1.txt"; exit 1; }
 echo "PASS: missing func fails early with install guidance"
 
-# 2. `func` present: must reach `func start`.
+# 2. `func` present: must reach `func start --dotnet-isolated` from the app directory.
 cat > "$SHIM/func" <<'EOF'
 #!/usr/bin/env bash
-echo "FUNC_INVOKED $*"
+echo "FUNC_INVOKED $* IN $(pwd)"
 EOF
 chmod +x "$SHIM/func"
 PATH="$SHIM:/usr/bin:/bin" bash scripts/launch-local.sh >"$SHIM/out2.txt" 2>&1 \
   || { echo "FAIL: unexpected non-zero exit with func present"; cat "$SHIM/out2.txt"; exit 1; }
-grep -q "FUNC_INVOKED start" "$SHIM/out2.txt" \
-  || { echo "FAIL: func start not reached"; cat "$SHIM/out2.txt"; exit 1; }
-echo "PASS: present func reaches func start"
+grep -q "FUNC_INVOKED start --dotnet-isolated IN .*/src/RecurringTasksBot" "$SHIM/out2.txt" \
+  || { echo "FAIL: func start --dotnet-isolated not run from src/RecurringTasksBot"; cat "$SHIM/out2.txt"; exit 1; }
+echo "PASS: present func reaches func start --dotnet-isolated from the app directory"

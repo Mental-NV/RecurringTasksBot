@@ -116,6 +116,7 @@ header). No tunnel, no inbound connections, no firewall changes.
 ```sh
 ./scripts/launch-local.sh
 ./scripts/poll-dev.sh            # --port 7072 if the host runs elsewhere
+./scripts/poll-dev.sh --timeout 20   # if your VPN resets long-held connections
 ```
 
 The poller verifies the token belongs to the development bot, deletes

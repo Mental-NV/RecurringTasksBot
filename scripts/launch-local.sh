@@ -62,6 +62,9 @@ fi
 export ASPNETCORE_ENVIRONMENT=Development
 export AZURE_FUNCTIONS_ENVIRONMENT=Development
 export AzureFunctionsJobHost__extensions__durableTask__hubName="RecurringTasksDev"
+# The Functions host and the Durable extension both need the storage
+# connection under its plain name as well.
+export AzureWebJobsStorage="$RecurringTasksBot__AzureWebJobsStorage"
 
 if ! command -v func >/dev/null 2>&1; then
   echo "Azure Functions Core Tools ('func') not found." >&2
@@ -72,4 +75,8 @@ if ! command -v func >/dev/null 2>&1; then
 fi
 
 echo "Starting Functions host (Development). Press Ctrl+C to stop."
-func start
+# Start from the function app directory (validation above already ran at
+# repo root). The runtime is pinned explicitly: Core Tools language
+# detection does not recognize this project's target framework.
+cd src/RecurringTasksBot
+func start --dotnet-isolated
