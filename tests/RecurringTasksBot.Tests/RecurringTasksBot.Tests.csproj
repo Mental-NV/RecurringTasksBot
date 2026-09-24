@@ -21,6 +21,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RecurringTasksBot.Core\RecurringTasksBot.Core.csproj" />
+    <!-- Exercise the actual transport/parser without building the Functions host. -->
+    <Compile Include="..\..\src\RecurringTasksBot\TelegramBotSender.cs" Link="App\TelegramBotSender.cs" />
+    <Compile Include="..\..\src\RecurringTasksBot\TelegramUpdateParser.cs" Link="App\TelegramUpdateParser.cs" />
+    <Compile Include="..\..\src\RecurringTasksBot\BotOptions.cs" Link="App\BotOptions.cs" />
   </ItemGroup>
 
 </Project>

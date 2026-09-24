@@ -155,3 +155,119 @@ are always kept.
 
 Old receipts 30d, deleted operations 90d, terminal orchestration history
 90d, retry-dedup guard 7d. Tune via the cleanup flags.
+
+## Phase 2: LLM execution
+
+Each scheduled occurrence runs the stored prompt through DeepSeek V4.1
+Flash on OpenRouter (`deepseek/deepseek-v4.1-flash`) with OpenRouter Web
+Search (Exa engine, OpenRouter-managed search credentials) and sends the
+answer as a rich Telegram message. Prompts are sent to an external
+LLM/search service; only the prompt text and scheduling context leave the
+system — never credentials, other users' data, or internal data.
+
+### Credentials
+
+One new secret, same name in both environments with different values:
+
+| Secret | Development | Production |
+| --- | --- | --- |
+| `RecurringTasksBot__Llm__ApiKey` | Export the OpenRouter key in the local launch environment. | Store as a GitHub Environment `production` secret; the deploy workflow maps it to the Function App settings. |
+
+The three phase-one secrets are unchanged. No separate DeepSeek or
+search key exists. Local launch validates the key by presence only and
+never prints it:
+
+```sh
+export RecurringTasksBot__Llm__ApiKey="<openrouter-key>"
+export RecurringTasksBot__Telegram__BotToken="<dev-bot-token>"
+export RecurringTasksBot__Telegram__WebhookSecret="<dev-secret>"
+export RecurringTasksBot__AzureWebJobsStorage="<dev-connection-string>"
+./scripts/launch-local.sh --tunnel-url https://<tunnel-host>
+```
+
+Non-secret LLM settings live under `RecurringTasksBot:Llm` in
+`appsettings.json` (provider, model, maximum reasoning effort, 480s
+request timeout, 131,072-token completion budget, 2 generation retries,
+search limits). The host loads `appsettings.json`, then the
+environment profile (`appsettings.Development.json` locally,
+`appsettings.Production.json` in Azure), then environment variables —
+so editing and redeploying the JSON changes behavior. Bicep sets only
+the LLM API key; it no longer installs non-secret LLM overrides. Remove
+any manually configured `RecurringTasksBot__Llm__*` overrides (except
+`ApiKey`) if you want the published profiles to control those values. The Functions
+timeout (`host.json`, 10 minutes on Consumption) exceeds one 480s
+generation attempt plus persistence.
+
+The shared search budget is 8 calls per generation attempt, with up to 5
+results per call and 40 results total. `MaxSearches` controls both the tool's
+`max_uses` and the request's `max_tool_calls`; `MaxTotalResults` controls the
+result budget and retained citations. Increasing only the call count can
+still leave later searches with no result allowance. These are upper bounds,
+not required usage; more research may increase cost and latency. Restart the
+local host after editing settings, or redeploy in production. Existing tasks
+use the new budget on future generation attempts without being recreated.
+
+The adapter uses SSE transport so OpenRouter can send keep-alive events
+during reasoning/search. It collects the complete answer before delivery;
+a disconnected or incomplete stream is retried, never sent as a partial
+answer. The 480-second deadline covers connection and the entire body read,
+and keep-alives do not extend it. Connection failures can occur earlier and
+are recorded separately from request timeouts, with safe transport/socket
+categories and elapsed time. Provider errors inside HTTP 200 responses are
+also classified as failures. Maximum reasoning remains enabled.
+
+### Limits
+
+Prompts and answers accept up to 32,768 characters (Unicode scalar
+count, not bytes or UTF-16 units). Reply to a long message with
+`/create <schedule>` to use it as the prompt. Answers are split into
+32,768-character rich messages only when Telegram's limits require it;
+over-long answers are visibly marked as truncated. Long prompts/answers
+are segmented across bounded table entities and reassembled on read;
+generated content follows the existing receipt retention policy
+(`delivery_*` rows include answer chunks). Formatting is split at rendered
+character boundaries without dropping answer text, tags, or link targets.
+
+Each executing activity owns a unique, conditional Table lease, renewed
+every minute and released when the attempt finishes. A crashed worker’s
+lease expires after 15 minutes. Waiting for an owner does not consume
+generation/delivery retries. Receipt writes verify ownership; generated
+payloads use separate versions so stale workers cannot overwrite a newer
+answer. Already-started external requests can still finish after lease loss.
+
+### Provider replacement
+
+Changing the OpenRouter model requires only editing
+`RecurringTasksBot:Llm:Model` in the appropriate `appsettings` profile
+and redeploying. It applies to new generation attempts;
+already-persisted results are delivered unchanged.
+Changing the API service (e.g. direct Alibaba/Qwen) requires changing
+provider/base URL/model/options, replacing the same API-key value, and
+adding an adapter next to `OpenRouterLlmExecutor` — scheduling,
+storage, and Telegram behavior do not change. Configuration is
+validated at startup and fails clearly; models are never silently
+switched and search is never silently disabled.
+
+### Rollout of existing operations
+
+Existing operations keep their IDs and schedules; their stored text
+becomes the prompt for future occurrences. Completed occurrences are
+not rerun, orchestration activity names and state shapes are unchanged
+(task hub stays `RecurringTasksProd`), and pre-upgrade histories replay
+safely. On terminal generation failure the bot sends a short notice
+identifying the operation and occurrence; future runs stay scheduled,
+and provider errors or credentials are never exposed.
+
+### Development smoke test
+
+`scripts/smoke-llm-dev.sh` runs one bounded live request (DeepSeek V4.1
+Flash, maximum reasoning, Exa web search) using the development
+`RecurringTasksBot__Llm__ApiKey`. It verifies a current-information
+answer with source links, that reasoning is excluded from the response,
+and that the answer composes into valid rich-message parts. It runs the same
+.NET adapter as the bot, with the common and Development JSON profiles.
+To reproduce a particular prompt, save it in a UTF-8 file and run
+`SMOKE_PROMPT_FILE=/absolute/path/prompt.txt scripts/smoke-llm-dev.sh` in a
+shell with the development LLM key exported. It sends no Telegram messages
+and prints only diagnostics/usage, not the prompt or answer. Ordinary CI
+uses no live credentials or paid calls.

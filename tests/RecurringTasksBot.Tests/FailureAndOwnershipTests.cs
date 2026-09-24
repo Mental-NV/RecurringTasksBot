@@ -107,7 +107,8 @@ public sealed class OwnershipTests
         var d = new FakeDeliveryStore();
         var sender = new FakeTelegramSender();
         ops.Seed(TestRecords.Operation("alice", "opA"));
-        var h = new DeliveryHandler(ops, d, sender);
+        var h = new DeliveryHandler(ops, d, new FakePayloadStore(), sender,
+            new FakeLlmExecutor(), TestLlm.Options());
 
         var result = await h.DeliverAsync("mallory", "opA",
             new DateTime(2026, 1, 5, 9, 0, 0, DateTimeKind.Utc));

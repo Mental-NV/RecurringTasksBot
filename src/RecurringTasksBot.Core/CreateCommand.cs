@@ -1,6 +1,9 @@
-// Validation for `/create <six-field NCRONTAB> <text>` per docs/Spec.md:
+// Validation for `/create <six-field NCRONTAB> <prompt>`:
 // UTC, six fields, seconds fixed to 0, future occurrence required,
-// 1-2,000 chars of plain text with spaces/line breaks preserved.
+// non-empty prompts up to Telegram's 32,768-character limit with spaces and
+// line breaks preserved. Character counts use Unicode scalar values, never
+// UTF-8 bytes or UTF-16 code units; oversized prompts are rejected, never
+// silently truncated.
 namespace RecurringTasksBot.Core;
 
 public sealed record CreateCommand(string CronExpression, string Text, NcrontabSchedule Schedule);
@@ -8,7 +11,7 @@ public sealed record CreateCommand(string CronExpression, string Text, NcrontabS
 public static class CreateCommandParser
 {
     public const int MinTextLength = 1;
-    public const int MaxTextLength = 2000;
+    public const int MaxTextLength = TextLimits.MaxPromptChars;
 
     public static bool TryParse(string? commandText, DateTime nowUtc,
         out CreateCommand? command, out string? error)
@@ -50,15 +53,15 @@ public static class CreateCommandParser
         // Preserve spaces and line breaks after the schedule fields.
         var textStart = rest.IndexOf(tokens[6], StringComparison.Ordinal);
         var text = rest[textStart..].TrimEnd();
-        if (text.Length < MinTextLength)
+        if (TextLimits.CountChars(text) < MinTextLength)
         {
-            error = "Message text must not be empty.";
+            error = "Prompt text must not be empty.";
             return false;
         }
 
-        if (text.Length > MaxTextLength)
+        if (TextLimits.CountChars(text) > MaxTextLength)
         {
-            error = $"Message text must be at most {MaxTextLength} characters.";
+            error = $"Prompt text must be at most {MaxTextLength} characters.";
             return false;
         }
 

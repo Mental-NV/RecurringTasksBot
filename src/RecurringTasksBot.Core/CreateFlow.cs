@@ -41,7 +41,8 @@ public sealed class CreateFlow(
         {
             try
             {
-                await receipts.InsertAsync(new UpdateReceipt(ownerId, updateId, commandText,
+                await receipts.InsertAsync(new UpdateReceipt(ownerId, updateId,
+                    UpdateReceipts.BoundCommand(commandText),
                     operationId, CommandCompleted: false, ReplyDelivered: false,
                     nowUtc, nowUtc), ct);
             }

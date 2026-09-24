@@ -94,19 +94,29 @@ public sealed class CreateCommandTests
     }
 
     [Fact]
-    public void TextOver2000Chars_IsRejected()
+    public void TextOver32768Chars_IsRejected()
     {
-        var text = "/create 0 0 9 * * * " + new string('x', 2001);
+        var text = "/create 0 0 9 * * * " + new string('x', 32769);
         Assert.False(Try(text, out _, out var err));
-        Assert.Contains("2000", err);
+        Assert.Contains("32768", err);
     }
 
     [Fact]
-    public void TextExactly2000Chars_IsAccepted()
+    public void TextExactly32768Chars_IsAccepted()
     {
-        var text = "/create 0 0 9 * * * " + new string('x', 2000);
+        var text = "/create 0 0 9 * * * " + new string('x', 32768);
         Assert.True(Try(text, out var cmd, out _));
-        Assert.Equal(2000, cmd!.Text.Length);
+        Assert.Equal(32768, TextLimits.CountChars(cmd!.Text));
+    }
+
+    [Fact]
+    public void EmojiCount_AsCharacters_NotUtf16Units()
+    {
+        // 32,768 emoji are 65,536 UTF-16 units but 32,768 characters.
+        var prompt = string.Concat(Enumerable.Repeat("🌍", 32768));
+        Assert.True(Try("/create 0 0 9 * * * " + prompt, out var cmd, out _));
+        Assert.Equal(32768, TextLimits.CountChars(cmd!.Text));
+        Assert.False(Try("/create 0 0 9 * * * " + prompt + "🌍", out _, out _));
     }
 
     [Fact]

@@ -29,6 +29,10 @@ param telegramBotToken string
 @secure()
 param telegramWebhookSecret string
 
+@description('LLM API key (secret): OpenRouter key used for DeepSeek execution and web search.')
+@secure()
+param llmApiKey string
+
 @description('Durable task hub. Must stay RecurringTasksProd across deployments.')
 param taskHubName string
 
@@ -100,6 +104,11 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
           name: 'RecurringTasksBot__Telegram__WebhookSecret'
           value: telegramWebhookSecret
         }
+        {
+          name: 'RecurringTasksBot__Llm__ApiKey'
+          value: llmApiKey
+        }
+        // Non-secret LLM options come from the published appsettings profiles.
         {
           name: 'RecurringTasksBot__TableName'
           value: tableName

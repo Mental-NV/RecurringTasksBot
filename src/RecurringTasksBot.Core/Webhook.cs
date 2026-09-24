@@ -19,7 +19,12 @@ public sealed record IncomingUpdate(
     long UserId,
     long ChatId,
     TelegramUpdateKind Kind,
-    string? Text);
+    string? Text,
+    // Reply-based creation: the replied-to prompt and its author's user ID.
+    // Text already carries the normalized prompt (plain text or rich
+    // message); ReplyPrompt carries the replied-to message when present.
+    string? ReplyPrompt = null,
+    long? ReplyUserId = null);
 
 public sealed record WebhookDecision(
     int HttpStatusCode,

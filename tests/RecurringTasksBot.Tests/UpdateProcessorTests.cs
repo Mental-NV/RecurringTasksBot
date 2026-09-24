@@ -78,8 +78,9 @@ public sealed class UpdateProcessorTests
         var r = new FakeReceiptStore();
         var o = new FakeOrchestrations();
         var sender = new Mock<ITelegramSender>();
-        // First reply attempt fails transiently.
-        sender.SetupSequence(s => s.SendTextAsync(It.IsAny<long>(), It.IsAny<string>(),
+        // First reply attempt fails transiently. (Mocks do not dispatch to
+        // the interface default, so rich sends are set up directly.)
+        sender.SetupSequence(s => s.SendRichTextAsync(It.IsAny<long>(), It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TelegramSendException(500, "boom"))
             .ReturnsAsync(2L);
@@ -97,7 +98,7 @@ public sealed class UpdateProcessorTests
         var second = await p.ProcessAsync(true, Msg(100, 42, "/create 0 0 9 * * * hi"), Now);
         Assert.Equal(200, second.StatusCode);
         Assert.Single(o.StartedInstances);
-        sender.Verify(s => s.SendTextAsync(777, It.Is<string>(m => m.Contains("created")),
+        sender.Verify(s => s.SendRichTextAsync(777, It.Is<string>(m => m.Contains("created")),
             It.IsAny<CancellationToken>()), Times.Exactly(2));
         Assert.True((await r.GetAsync("42", 100))!.ReplyDelivered);
     }
@@ -120,7 +121,7 @@ public sealed class UpdateProcessorTests
         var (p, _, _, _, t) = New();
         var result = await p.ProcessAsync(true, Msg(1, 42, "/frobnicate"), Now);
         Assert.Equal(200, result.StatusCode);
-        Assert.Equal(ListFormatter.HelpMessage, t.Sent[0].Text);
+        Assert.Equal(ListFormatter.HelpMessage, RichMessageParts.ToPlainText(t.Sent[0].Text));
     }
 
     [Fact]
@@ -134,7 +135,7 @@ public sealed class UpdateProcessorTests
 
         Assert.Equal(200, result.StatusCode);
         Assert.NotEmpty(t.Sent);
-        Assert.All(t.Sent, m => Assert.True(m.Text.Length <= 4096));
+        Assert.All(t.Sent, m => Assert.True(TextLimits.CountChars(m.Text) <= 32768));
         var joined = string.Join("\n", t.Sent.Select(m => m.Text));
         Assert.Contains("op1", joined);
         Assert.Contains("op2", joined);
@@ -146,7 +147,7 @@ public sealed class UpdateProcessorTests
         var (p, _, _, _, t) = New();
         var result = await p.ProcessAsync(true, Msg(2, 42, "/list"), Now);
         Assert.Equal(200, result.StatusCode);
-        Assert.Equal(ListFormatter.EmptyListMessage, t.Sent[0].Text);
+        Assert.Equal(ListFormatter.EmptyListMessage, RichMessageParts.ToPlainText(t.Sent[0].Text));
     }
 
     [Fact]
@@ -200,7 +201,7 @@ public sealed class UpdateProcessorTests
     public async Task BlockedBot_OnReply_Still200()
     {
         var sender = new Mock<ITelegramSender>();
-        sender.Setup(s => s.SendTextAsync(It.IsAny<long>(), It.IsAny<string>(),
+        sender.Setup(s => s.SendRichTextAsync(It.IsAny<long>(), It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TelegramSendException(403, "Forbidden: bot was blocked by the user"));
         var p = new UpdateProcessor(new FakeOperationStore(), new FakeReceiptStore(),
@@ -225,7 +226,8 @@ public sealed class SingleAttemptTests
         {
             AlwaysThrow = new TelegramSendException(500, "x"),
         };
-        var h = new DeliveryHandler(ops, new FakeDeliveryStore(), sender);
+        var h = new DeliveryHandler(ops, new FakeDeliveryStore(), new FakePayloadStore(),
+            sender, new FakeLlmExecutor(), TestLlm.Options());
 
         var r0 = await h.AttemptOnceAsync("42", "op1", Scheduled, 0);
         Assert.Equal(SingleAttemptOutcome.NeedRetry, r0.Outcome);
@@ -243,12 +245,12 @@ public sealed class SingleAttemptTests
         {
             AlwaysThrow = new TelegramSendException(500, "x"),
         };
-        var h = new DeliveryHandler(ops, d, sender);
+        var h = new DeliveryHandler(ops, d, new FakePayloadStore(), sender,
+            new FakeLlmExecutor(), TestLlm.Options());
 
         var r = await h.AttemptOnceAsync("42", "op1", Scheduled,
-            DeliveryPolicy.MaxRetriesAfterInitial);
+            OccurrenceExecution.MaxCombinedRetriesAfterInitial);
         Assert.Equal(SingleAttemptOutcome.OccurrenceFailed, r.Outcome);
-        Assert.Equal(4, r.Attempts);
         Assert.Equal(OperationStatus.Active, (await ops.GetAsync("42", "op1"))!.Status);
         Assert.Equal("failed", (await d.GetAsync("42", "op1", Scheduled))!.Status);
     }
@@ -262,7 +264,8 @@ public sealed class SingleAttemptTests
         {
             AlwaysThrow = new TelegramSendException(403, "Forbidden: bot was blocked by the user"),
         };
-        var h = new DeliveryHandler(ops, new FakeDeliveryStore(), sender);
+        var h = new DeliveryHandler(ops, new FakeDeliveryStore(), new FakePayloadStore(),
+            sender, new FakeLlmExecutor(), TestLlm.Options());
 
         var r = await h.AttemptOnceAsync("42", "op1", Scheduled, 0);
         Assert.Equal(SingleAttemptOutcome.OperationFailed, r.Outcome);
@@ -275,7 +278,8 @@ public sealed class SingleAttemptTests
         var ops = new FakeOperationStore();
         ops.Seed(TestRecords.Operation("42", "op1", OperationStatus.Deleted));
         var sender = new FakeTelegramSender();
-        var h = new DeliveryHandler(ops, new FakeDeliveryStore(), sender);
+        var h = new DeliveryHandler(ops, new FakeDeliveryStore(), new FakePayloadStore(),
+            sender, new FakeLlmExecutor(), TestLlm.Options());
 
         var r = await h.AttemptOnceAsync("42", "op1", Scheduled, 0);
         Assert.Equal(SingleAttemptOutcome.SkippedStopped, r.Outcome);

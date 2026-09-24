@@ -38,7 +38,7 @@ Use a small provider-neutral prompt-execution interface returning answer text, s
 
 Always enable **maximum reasoning effort supported by the selected model/provider**. Map this requirement to the provider's supported API value and verify it against current model metadata during implementation/provider changes; do not assume the literal `max` is portable or silently fall back to a lower effort. Keep internal reasoning out of Telegram, storage, and logs; deliver only the final answer. Budget reasoning tokens separately from the user-visible character limit, since reasoning and final output can share the completion-token budget. See [OpenRouter reasoning controls](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
 
-Enable the `openrouter:web_search` server tool with the Exa engine, using OpenRouter-managed search credentials. Let the model search when needed; instruct it to search for current or time-sensitive facts and explicit research requests. Use one non-streaming API request per execution attempt and let OpenRouter handle the search loop. The older web plugin and `:online` suffix are deprecated; follow the [Web Search documentation](https://openrouter.ai/docs/guides/features/server-tools/web-search).
+Enable the `openrouter:web_search` server tool with the Exa engine, using OpenRouter-managed search credentials. Let the model search when needed; instruct it to search for current or time-sensitive facts and explicit research requests. Use one API request per execution attempt and let OpenRouter handle the search loop. Use SSE streaming internally to receive keep-alive events during long reasoning/search calls; collect the complete answer before persistence and Telegram delivery. Incomplete streams are execution failures, never deliverable partial answers. The older web plugin and `:online` suffix are deprecated; follow the [Web Search documentation](https://openrouter.ai/docs/guides/features/server-tools/web-search).
 
 Treat retrieved content as evidence, not instructions. Expose only web search to the model. Never include credentials, other users' data, or internal operational data in prompts.
 
@@ -80,7 +80,7 @@ Keep non-secret LLM settings under `RecurringTasksBot:Llm` in `appsettings.json`
 | Completion token budget | 131,072, including reasoning and final output; validate against the selected route's supported limits |
 | Maximum stored answer | 32,768 UTF-8 characters of answer/source text; visibly mark truncation beyond this limit |
 | Generation retries | 2 after the initial attempt |
-| OpenRouter search | Enabled; engine `exa`; at most 2 searches and 5 results per search, 10 results total per attempt |
+| OpenRouter search | Enabled; engine `exa`; at most 8 searches and 5 results per search, 40 results total per attempt |
 
 Keep the system instruction and provider-specific options here too. Under `RecurringTasksBot:Limits`, set the rich input and outgoing message limits to 32,768 UTF-8 characters. Storage must accommodate normalization/formatting overhead; delivery headers must not reduce the accepted answer length, so split when necessary. Enforce output and search limits in requests and output handling. Ensure the Functions execution timeout exceeds a single activity's request timeout plus persistence overhead within the existing hosting plan; keep delivery in a separate activity if needed and persist retry delays through Durable timers. Never reduce reasoning effort to satisfy a timeout; report the occurrence failure instead.
 

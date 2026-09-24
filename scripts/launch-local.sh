@@ -17,7 +17,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for v in RecurringTasksBot__Telegram__BotToken RecurringTasksBot__Telegram__WebhookSecret RecurringTasksBot__AzureWebJobsStorage; do
+for v in RecurringTasksBot__Telegram__BotToken RecurringTasksBot__Telegram__WebhookSecret RecurringTasksBot__AzureWebJobsStorage RecurringTasksBot__Llm__ApiKey; do
   if [ -z "${!v:-}" ]; then echo "Missing required env var: $v" >&2; exit 1; fi
 done
 

@@ -84,7 +84,7 @@ public sealed class UpdateProcessor(
                 var reply = CreateConfirmation(op);
                 try
                 {
-                    await sender.SendTextAsync(update.ChatId, reply, ct);
+                    await sender.SendRichTextAsync(update.ChatId, RichMessageParts.Escape(reply), ct);
                     await receipts.MarkReplyDeliveredAsync(ownerId, update.UpdateId, ct);
                     return new ProcessResult(200, [reply]);
                 }
@@ -102,15 +102,22 @@ public sealed class UpdateProcessor(
         string ownerId, IncomingUpdate update, string text, DateTimeOffset nowUtc,
         CancellationToken ct)
     {
-        if (!CreateCommandParser.TryParse(text, nowUtc.UtcDateTime, out var cmd, out var error) ||
+        // Reply-based creation: `/create <schedule>` as a reply uses the
+        // replied-to text or rich message from the same user as the prompt.
+        var effectiveText = text;
+        if (!HasInlinePrompt(text) && update.ReplyPrompt is { Length: > 0 } reply &&
+            update.ReplyUserId == update.UserId)
+            effectiveText = text.TrimEnd() + "\n" + reply.Trim();
+
+        if (!CreateCommandParser.TryParse(effectiveText, nowUtc.UtcDateTime, out var cmd, out var error) ||
             cmd is null)
         {
             var help = $"{error}\n\n{ListFormatter.HelpMessage}";
-            return await CompleteWithReplyAsync(ownerId, update, text, nowUtc, help, ct);
+            return await CompleteWithReplyAsync(ownerId, update, effectiveText, nowUtc, help, ct);
         }
 
         var result = await Flow.HandleCreateAsync(update.UserId, update.ChatId,
-            update.UpdateId, text, cmd.CronExpression, cmd.Text, nowUtc, ct);
+            update.UpdateId, effectiveText, cmd.CronExpression, cmd.Text, nowUtc, ct);
 
         if (result.Outcome == CreateOutcome.Duplicate)
         {
@@ -119,10 +126,18 @@ public sealed class UpdateProcessor(
         }
 
         var op = await operations.GetAsync(ownerId, result.OperationId, ct);
-        var reply = op is not null ? CreateConfirmation(op) : $"Reminder {result.OperationId} created.";
-        await sender.SendTextAsync(update.ChatId, reply, ct);
+        var replyText = op is not null ? CreateConfirmation(op) : $"Reminder {result.OperationId} created.";
+        await sender.SendRichTextAsync(update.ChatId, RichMessageParts.Escape(replyText), ct);
         await receipts.MarkReplyDeliveredAsync(ownerId, update.UpdateId, ct);
-        return new ProcessResult(200, [reply]);
+        return new ProcessResult(200, [replyText]);
+    }
+
+    // Inline text beyond the verb plus six schedule fields counts as the
+    // prompt; a bare schedule relies on the replied-to message.
+    private static bool HasInlinePrompt(string text)
+    {
+        var tokens = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        return tokens.Length > 7;
     }
 
     private async Task<ProcessResult> HandleListAsync(
@@ -157,7 +172,7 @@ public sealed class UpdateProcessor(
             ? new[] { ListFormatter.EmptyListMessage }
             : ListFormatter.Split(summaries).ToArray();
         foreach (var message in messages)
-            await sender.SendTextAsync(update.ChatId, message, ct);
+            await sender.SendRichTextAsync(update.ChatId, RichMessageParts.Escape(message), ct);
         await receipts.MarkCompletedAsync(ownerId, update.UpdateId, null, ct);
         await receipts.MarkReplyDeliveredAsync(ownerId, update.UpdateId, ct);
         return new ProcessResult(200, messages);
@@ -186,7 +201,7 @@ public sealed class UpdateProcessor(
         string reply, CancellationToken ct)
     {
         await EnsureReceiptAsync(ownerId, update, commandText, nowUtc, ct);
-        await sender.SendTextAsync(update.ChatId, reply, ct);
+        await sender.SendRichTextAsync(update.ChatId, RichMessageParts.Escape(reply), ct);
         await receipts.MarkCompletedAsync(ownerId, update.UpdateId, null, ct);
         await receipts.MarkReplyDeliveredAsync(ownerId, update.UpdateId, ct);
         return new ProcessResult(200, [reply]);
@@ -199,7 +214,7 @@ public sealed class UpdateProcessor(
         try
         {
             await receipts.InsertAsync(new UpdateReceipt(ownerId, update.UpdateId,
-                commandText, null, false, false, nowUtc, nowUtc), ct);
+                UpdateReceipts.BoundCommand(commandText), null, false, false, nowUtc, nowUtc), ct);
         }
         catch (ConcurrencyConflictException)
         {
@@ -209,7 +224,8 @@ public sealed class UpdateProcessor(
 
     private static string CreateConfirmation(OperationRecord op) =>
         $"Reminder {op.OperationId} created ({OperationStatusNames.ToName(op.Status)}).\n" +
-        $"Schedule: {op.CronExpression} (UTC).";
+        $"Schedule: {op.CronExpression} (UTC).\n" +
+        "I will run this prompt at each occurrence and send the answer here.";
 
     private static bool IsTransient(Exception ex) =>
         ex is TransientStoreException or TimeoutException or HttpRequestException

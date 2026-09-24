@@ -38,6 +38,7 @@ jobs:
             storageConnectionString=${{ secrets.RecurringTasksBot__AzureWebJobsStorage }}
             telegramBotToken=${{ secrets.RecurringTasksBot__Telegram__BotToken }}
             telegramWebhookSecret=${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
+            llmApiKey=${{ secrets.RecurringTasksBot__Llm__ApiKey }}
       - name: Deploy app package
         run: |
           cd publish && zip -r ../app.zip . && cd ..

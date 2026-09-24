@@ -25,14 +25,14 @@ public sealed class ListSplitterTests
     }
 
     [Fact]
-    public void Messages_NeverExceed4096()
+    public void Messages_NeverExceed32768()
     {
         var ops = Enumerable.Range(0, 50)
-            .Select(i => Op($"op{i:000}", new string('m', 300)))
+            .Select(i => Op($"op{i:000}", new string('m', 1200)))
             .ToList();
         var msgs = ListFormatter.Split(ops);
         Assert.True(msgs.Count > 1);
-        Assert.All(msgs, m => Assert.True(m.Length <= 4096, $"len {m.Length}"));
+        Assert.All(msgs, m => Assert.True(TextLimits.CountChars(m) <= 32768, $"len {m.Length}"));
         var joined = string.Join("\n\n", msgs);
         foreach (var op in ops)
             Assert.Contains(op.OperationId, joined);
@@ -41,11 +41,11 @@ public sealed class ListSplitterTests
     [Fact]
     public void Ops_AreKeptTogether_WherePossible()
     {
-        // Each op ~2000 chars: two fit in one message only if combined <= 4096.
+        // Two blocks fit in one message only if combined <= 32768.
         var ops = new[] { Op("a", new string('x', 1900)), Op("b", new string('y', 1900)) };
         var blocks = ops.Select(ListFormatter.FormatBlock).ToArray();
         var msgs = ListFormatter.Split(ops);
-        if (blocks[0].Length + 2 + blocks[1].Length <= 4096)
+        if (TextLimits.CountChars(blocks[0]) + 2 + TextLimits.CountChars(blocks[1]) <= 32768)
         {
             Assert.Single(msgs);
         }
@@ -62,23 +62,23 @@ public sealed class ListSplitterTests
     {
         // Craft texts so both blocks plus separator fit exactly at the limit.
         var b1 = ListFormatter.FormatBlock(Op("id1", "t"));
-        var roomForSecond = 4096 - b1.Length - 2;
+        var roomForSecond = 32768 - TextLimits.CountChars(b1) - 2;
         var prefix = ListFormatter.FormatBlock(Op("id2", ""));
-        var textLen = roomForSecond - prefix.Length;
+        var textLen = roomForSecond - TextLimits.CountChars(prefix);
         Assert.True(textLen > 0);
         var msgs = ListFormatter.Split([Op("id1", "t"), Op("id2", new string('z', textLen))]);
         Assert.Single(msgs);
-        Assert.Equal(4096, msgs[0].Length);
+        Assert.Equal(32768, TextLimits.CountChars(msgs[0]));
     }
 
     [Fact]
     public void OversizedSingleOp_IsHardSplit()
     {
-        var msgs = ListFormatter.Split([Op("big", new string('q', 9000))]);
+        var msgs = ListFormatter.Split([Op("big", new string('q', 70000))]);
         Assert.True(msgs.Count >= 3);
-        Assert.All(msgs, m => Assert.True(m.Length <= 4096));
-        Assert.Equal(9000 + "big\nSchedule: 0 0 9 * * * (UTC)\nStatus: active\n".Length,
-            msgs.Sum(m => m.Length));
+        Assert.All(msgs, m => Assert.True(TextLimits.CountChars(m) <= 32768));
+        Assert.Equal(70000 + TextLimits.CountChars("big\nSchedule: 0 0 9 * * * (UTC)\nStatus: active\n"),
+            msgs.Sum(m => TextLimits.CountChars(m)));
     }
 
     [Fact]

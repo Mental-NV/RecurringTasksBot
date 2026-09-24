@@ -93,19 +93,146 @@ public sealed class FakeReceiptStore : IUpdateReceiptStore
 public sealed class FakeDeliveryStore : IDeliveryReceiptStore
 {
     private readonly Dictionary<string, DeliveryReceipt> _receipts = new();
+    private readonly object _gate = new();
+    public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
+    public int RenewalCount { get; private set; }
+    public bool LoseOnRenewal { get; set; }
     private static string Key(string o, string id, DateTimeOffset t) => $"{o}:{id}:{t.UtcTicks}";
 
     public Task<DeliveryReceipt?> GetAsync(string ownerId, string operationId, DateTime scheduledUtc, CancellationToken ct = default)
     {
-        _receipts.TryGetValue(Key(ownerId, operationId, scheduledUtc), out var r);
-        return Task.FromResult(r);
+        lock (_gate)
+        {
+            _receipts.TryGetValue(Key(ownerId, operationId, scheduledUtc), out var r);
+            return Task.FromResult(r);
+        }
     }
 
     public Task UpsertAsync(DeliveryReceipt receipt, CancellationToken ct = default)
     {
-        _receipts[Key(receipt.OwnerId, receipt.OperationId, receipt.ScheduledUtc)] = receipt;
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var key = Key(receipt.OwnerId, receipt.OperationId, receipt.ScheduledUtc);
+            // Unowned writes seed test fixtures only. Owned writes follow the
+            // production store's ownership/expiry checks.
+            if (receipt.ClaimId is not null &&
+                (!_receipts.TryGetValue(key, out var current) || current.ClaimId != receipt.ClaimId ||
+                 OccurrenceExecution.IsClaimStale(current, Now))) throw new ClaimLostException();
+            _receipts[key] = receipt.ClaimId is null ? receipt : receipt with { UpdatedUtc = Now };
+            return Task.CompletedTask;
+        }
+    }
+
+    public Task<bool> TryClaimAsync(string ownerId, string operationId, DateTime scheduledUtc,
+        string claimId, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            var key = Key(ownerId, operationId, scheduledUtc);
+            if (_receipts.TryGetValue(key, out var existing))
+            {
+                if (OccurrenceExecution.IsTerminal(existing) || existing.ClaimId is not null &&
+                    !OccurrenceExecution.IsClaimStale(existing, Now)) return Task.FromResult(false);
+            }
+            else existing = new DeliveryReceipt(ownerId, operationId, scheduledUtc,
+                OccurrenceExecution.StatusGenerating, 0, null, null);
+            _receipts[key] = existing with { UpdatedUtc = Now, ClaimId = claimId };
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> RenewClaimAsync(string ownerId, string operationId, DateTime scheduledUtc,
+        string claimId, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            RenewalCount++;
+            var key = Key(ownerId, operationId, scheduledUtc);
+            if (LoseOnRenewal || !_receipts.TryGetValue(key, out var current) || current.ClaimId != claimId ||
+                OccurrenceExecution.IsClaimStale(current, Now)) return Task.FromResult(false);
+            _receipts[key] = current with { UpdatedUtc = Now };
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task ReleaseClaimAsync(string ownerId, string operationId, DateTime scheduledUtc,
+        string claimId, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            var key = Key(ownerId, operationId, scheduledUtc);
+            if (_receipts.TryGetValue(key, out var current) && current.ClaimId == claimId)
+                _receipts[key] = current with { ClaimId = null };
+            return Task.CompletedTask;
+        }
+    }
+
+    public void SeedStaleClaim(string ownerId, string operationId, DateTime scheduledUtc)
+    {
+        lock (_gate)
+            _receipts[Key(ownerId, operationId, scheduledUtc)] = new DeliveryReceipt(
+                ownerId, operationId, scheduledUtc, OccurrenceExecution.StatusGenerating,
+                0, null, null, UpdatedUtc: Now - TimeSpan.FromHours(1), ClaimId: "dead-worker");
+    }
+}
+
+public sealed class FakePayloadStore : IOccurrencePayloadStore
+{
+    private readonly Dictionary<string, IReadOnlyList<string>> _payloads = new();
+    private static string Key(string o, string id, DateTimeOffset t) => $"{o}:{id}:{t.UtcTicks}";
+
+    public Task PersistAsync(string ownerId, string operationId, DateTime scheduledUtc,
+        IReadOnlyList<string> parts, CancellationToken ct = default, string? version = null)
+    {
+        _payloads[Key(ownerId, operationId, scheduledUtc) + ":" + version] = parts.ToList();
+        _payloads[Key(ownerId, operationId, scheduledUtc) + ":"] = parts.ToList();
         return Task.CompletedTask;
     }
+
+    public Task<IReadOnlyList<string>?> LoadAsync(string ownerId, string operationId,
+        DateTime scheduledUtc, CancellationToken ct = default, string? version = null)
+    {
+        _payloads.TryGetValue(Key(ownerId, operationId, scheduledUtc) + ":" + version, out var parts);
+        return Task.FromResult(parts);
+    }
+}
+
+public sealed class FakeLlmExecutor : ILlmPromptExecutor
+{
+    public List<LlmPrompt> Calls { get; } = new();
+    public Func<LlmPrompt, Task<LlmResult>>? Handler { get; set; }
+
+    public static LlmResult Answer(string text, IReadOnlyList<LlmSource>? sources = null) =>
+        new(text, sources ?? [], new LlmUsage(10, 20, sources?.Count ?? 0, (sources?.Count ?? 0) > 0),
+            "OpenRouter", "deepseek/deepseek-v4.1-flash", (sources?.Count ?? 0) > 0);
+
+    public Task<LlmResult> ExecuteAsync(LlmPrompt prompt, CancellationToken ct = default)
+    {
+        Calls.Add(prompt);
+        return Handler is not null
+            ? Handler(prompt)
+            : Task.FromResult(Answer("Canned answer."));
+    }
+}
+
+public static class TestLlm
+{
+    public static LlmOptions Options() => new(
+        Provider: "OpenRouter",
+        BaseUrl: "https://openrouter.ai/api/v1",
+        Model: "deepseek/deepseek-v4.1-flash",
+        ReasoningEffort: "Maximum",
+        RequestTimeout: TimeSpan.FromSeconds(480),
+        CompletionTokenBudget: 131072,
+        MaxStoredAnswerChars: 32768,
+        GenerationRetries: 2,
+        SearchEnabled: true,
+        SearchEngine: "exa",
+        MaxSearches: 2,
+        MaxResultsPerSearch: 5,
+        MaxTotalResults: 10,
+        SystemInstruction: string.Empty);
 }
 
 public sealed class FakeOrchestrations : IOrchestrationClient
