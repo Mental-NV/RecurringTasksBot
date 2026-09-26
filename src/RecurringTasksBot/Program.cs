@@ -31,7 +31,17 @@ var host = new HostBuilder()
         var llmApiKey = RequiredEnv("RecurringTasksBot__Llm__ApiKey");
         var llmOptions = LlmConfig.Read(key => config[key]);
         llmOptions.Validate();
+        var phase3Options = Phase3Config.Read(key => config[key]);
+        phase3Options.Validate();
+        if (llmOptions.RequestTimeout > Phase3Limits.MaxLlmTimeout)
+            throw new InvalidOperationException(
+                "LLM request timeout exceeds the 540-second Phase 3 activity budget.");
+        if (Phase3Config.HasLegacyMaxStoredAnswerOverride(key => config[key]))
+            Console.Error.WriteLine(
+                "RecurringTasksBot: Llm:MaxStoredAnswerChars is deprecated and ignored for new answers.");
 
+        services.AddSingleton<IPhase3Clock, SystemPhase3Clock>();
+        services.AddSingleton<IOccurrenceRepository, TableOccurrenceRepository>();
         services.AddSingleton(new BotOptions(
             storage,
             table,
@@ -39,6 +49,7 @@ var host = new HostBuilder()
             Environment.GetEnvironmentVariable("RecurringTasksBot__Telegram__WebhookSecret")
                 ?? string.Empty));
         services.AddSingleton(llmOptions);
+        services.AddSingleton(phase3Options);
         services.AddSingleton<TableClients>();
         services.AddSingleton<IOperationStore, TableOperationStore>();
         services.AddSingleton<IUpdateReceiptStore, TableUpdateReceiptStore>();
@@ -55,6 +66,8 @@ var host = new HostBuilder()
                     nameof(ILlmPromptExecutor)),
                 llmOptions,
                 llmApiKey));
+        services.AddSingleton<IPhase3LlmExecutor>(provider =>
+            (OpenRouterLlmExecutor)provider.GetRequiredService<ILlmPromptExecutor>());
     })
     .Build();
 

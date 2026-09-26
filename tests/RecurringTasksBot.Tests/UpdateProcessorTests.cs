@@ -176,6 +176,25 @@ public sealed class UpdateProcessorTests
     }
 
     [Fact]
+    public async Task List_DuplicateTextOperations_RenderTwoSeparatedBlocks()
+    {
+        var (p, ops, _, _, t) = New();
+        ops.Seed(TestRecords.Operation("42", "op1") with { Text = "same prompt" });
+        ops.Seed(TestRecords.Operation("42", "op2") with { Text = "same prompt" });
+
+        var result = await p.ProcessAsync(true, Msg(2, 42, "/list"), Now);
+
+        Assert.Equal(200, result.StatusCode);
+        var body = RichMessageParts.ToPlainText(t.Sent[0].Text);
+        Assert.Contains("op1", body);
+        Assert.Contains("op2", body);
+        var first = body.IndexOf("op1", StringComparison.Ordinal);
+        var second = body.IndexOf("op2", StringComparison.Ordinal);
+        Assert.InRange(second, first + 1, body.Length - 1);
+        Assert.Contains("\n\n", body[first..second]);
+    }
+
+    [Fact]
     public async Task Delete_UnknownId_200_WithNotice()
     {
         var (p, _, _, _, t) = New();

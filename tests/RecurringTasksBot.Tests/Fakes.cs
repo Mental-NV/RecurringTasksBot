@@ -198,14 +198,355 @@ public sealed class FakePayloadStore : IOccurrencePayloadStore
     }
 }
 
-public sealed class FakeLlmExecutor : ILlmPromptExecutor
+public sealed class FakeClock : IPhase3Clock
+{
+    public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UtcNow => Now;
+}
+
+// In-memory occurrence repository enforcing the same atomicity, claim,
+// version, hash, and memory rules as the Table-backed implementation:
+// pointer-once publication, ordered confirmations, newer-wins memory.
+public sealed class FakeOccurrenceRepository(
+    FakeOperationStore operations,
+    FakeDeliveryStore receipts,
+    FakeClock clock) : IOccurrenceRepository
+{
+    private readonly object _gate = new();
+    private readonly Dictionary<string, FrozenContextRecord> _contexts = new();
+    private readonly Dictionary<string, AnswerArtifact> _answers = new();
+    private readonly Dictionary<string, DeliveryPlanDoc> _plans = new();
+    private readonly Dictionary<string, string> _planVersions = new();
+    private readonly Dictionary<(string Owner, string Id), MemoryRecord> _memory = new();
+    private static string Key(string o, string id, DateTime t) => $"{o}:{id}:{t.Ticks}";
+
+    public Task<MemoryRecord?> ReadPreviousReplyAsync(string ownerId, string operationId,
+        CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            _memory.TryGetValue((ownerId, operationId), out var memory);
+            return Task.FromResult(memory);
+        }
+    }
+
+    public void SeedMemory(MemoryRecord memory)
+    {
+        lock (_gate)
+            _memory[(memory.OwnerId, memory.OperationId)] = memory;
+    }
+
+    public async Task<ContextInitResult> InitializeContextAsync(
+        FrozenContextRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        var op = await ActiveOperationAsync(request.OwnerId, request.OperationId);
+        lock (_gate)
+        {
+            if (receipt.ContextVersion is not null)
+            {
+                if (!_contexts.TryGetValue(Key(request.OwnerId, request.OperationId, request.ScheduledUtc),
+                    out var existing))
+                    throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt, "context row is missing");
+                return new ContextInitResult(existing, false);
+            }
+            _memory.TryGetValue((request.OwnerId, request.OperationId), out var memory);
+            var scheduled = Phase3Times.Utc(request.ScheduledUtc);
+            var eligible = memory is not null && Phase3Times.Utc(memory.SourceScheduledUtc) < scheduled;
+            var context = new FrozenContextRecord(
+                Phase3Versions.New(), request.OwnerId, request.OperationId, scheduled,
+                op.Text, op.CronExpression,
+                Phase3ContextEnvelope.OccurrenceIdFor(request.OperationId, scheduled),
+                Phase3ContextEnvelope.ToIso8601(scheduled),
+                Phase3ContextEnvelope.ToIso8601(request.Inputs.ExecutionStartedUtc),
+                eligible,
+                eligible ? Phase3ContextEnvelope.ToIso8601(memory!.SourceScheduledUtc) : null,
+                eligible ? Phase3ContextEnvelope.ToIso8601(memory!.SourceExecutedUtc) : null,
+                eligible ? memory!.Answer : null,
+                eligible ? null : memory is null ? "no_memory_row" : "no_eligible_previous_reply",
+                request.Inputs.EffectiveSystemInstruction,
+                request.Inputs.TargetAnswerTextChars,
+                request.Inputs.MaxRichMessageChars,
+                request.Inputs.MemoryMode,
+                Phase3Limits.EnabledCapabilities,
+                Phase3Limits.InstructionVersion,
+                clock.UtcNow);
+            _contexts[Key(request.OwnerId, request.OperationId, request.ScheduledUtc)] = context;
+            receipts.UpsertAsync(receipt with
+            {
+                ContextVersion = context.ContextVersion,
+                ContextInitialized = true,
+                InstructionVersion = Phase3Limits.InstructionVersion,
+                PayloadSchemaVersion = Phase3Limits.SchemaVersion,
+            }, ct).GetAwaiter().GetResult();
+            return new ContextInitResult(context, true);
+        }
+    }
+
+    public async Task PersistGenerationAsync(
+        PersistGenerationRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        await ActiveOperationAsync(request.OwnerId, request.OperationId);
+        if (request.InitialPlan.AnswerVersion != request.Answer.AnswerVersion ||
+            request.InitialPlan.SourceSha256 != request.Answer.SourceSha256)
+            throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt,
+                "initial plan does not match the generated answer");
+        DeliveryPlan.Validate(request.InitialPlan, request.Answer.Text);
+        lock (_gate)
+        {
+            if (receipt.AnswerVersion is not null || receipt.PlanVersion is not null)
+                return; // Pointers already committed: never regenerate.
+            var planVersion = Phase3Versions.New();
+            _answers[Key(request.OwnerId, request.OperationId, request.ScheduledUtc)] = request.Answer;
+            _plans[Key(request.OwnerId, request.OperationId, request.ScheduledUtc)] = request.InitialPlan;
+            _planVersions[Key(request.OwnerId, request.OperationId, request.ScheduledUtc)] = planVersion;
+            receipts.UpsertAsync(receipt with
+            {
+                ExecutionStatus = request.Answer.Kind == AnswerKind.Answer ? "generated" : "failed",
+                ErrorSummary = request.ErrorSummary ?? receipt.ErrorSummary,
+                Provider = request.Usage.Provider,
+                ModelName = request.Usage.ModelName,
+                PromptTokens = request.Usage.PromptTokens,
+                CompletionTokens = request.Usage.CompletionTokens,
+                SearchResults = request.Usage.SearchResults,
+                SearchUsed = request.Usage.SearchUsed,
+                AnswerVersion = request.Answer.AnswerVersion,
+                PlanVersion = planVersion,
+                PayloadSchemaVersion = Phase3Limits.SchemaVersion,
+                SentParts = 0,
+                TotalParts = request.InitialPlan.Leaves.Count,
+                MessageIds = string.Empty,
+                FailureNotice = request.Answer.Kind == AnswerKind.FailureNotice
+                    ? request.Answer.Text : receipt.FailureNotice,
+            }, ct).GetAwaiter().GetResult();
+        }
+    }
+
+    public async Task<DeliveryPlanDoc> ConfirmLeafAsync(
+        ConfirmLeafRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        RequirePointers(receipt);
+        lock (_gate)
+        {
+            var key = Key(request.OwnerId, request.OperationId, request.ScheduledUtc);
+            var plan = _plans.TryGetValue(key, out var stored)
+                ? stored
+                : throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt, "plan row is missing");
+            if (plan.AnswerVersion != receipt.AnswerVersion)
+                throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt,
+                    "plan references another answer");
+            var confirmed = DeliveryPlan.Confirm(plan, request.LeafId, request.MessageId);
+            if (ReferenceEquals(confirmed, plan))
+                return confirmed; // Idempotent replay writes nothing.
+            _plans[key] = confirmed;
+            receipts.UpsertAsync(WithDeliveryFailures(
+                DeliveryPlanProgress.ApplyToReceipt(receipt, confirmed), request.DeliveryFailures), ct)
+                .GetAwaiter().GetResult();
+            return confirmed;
+        }
+    }
+
+    public async Task<PlanReplacement> ReplaceLeafAsync(
+        ReplaceLeafRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        RequirePointers(receipt);
+        lock (_gate)
+        {
+            var key = Key(request.OwnerId, request.OperationId, request.ScheduledUtc);
+            var plan = _plans.TryGetValue(key, out var stored)
+                ? stored
+                : throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt, "plan row is missing");
+            if (!_answers.TryGetValue(key, out var answer))
+                throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt, "answer row is missing");
+            if (plan.AnswerVersion != receipt.AnswerVersion)
+                throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt,
+                    "plan references another answer");
+            var (replaced, fresh) = request.Fallback switch
+            {
+                PlanFallbackKind.ToLiteralRich =>
+                    DeliveryPlan.ReplaceWithLiteralRich(plan, answer.Text, request.LeafId),
+                PlanFallbackKind.ToSmallLiteral =>
+                    DeliveryPlan.ReplaceWithSmallLiteral(plan, answer.Text, request.LeafId),
+                PlanFallbackKind.ToPlain =>
+                    DeliveryPlan.ReplaceWithPlain(plan, answer.Text, request.LeafId),
+                _ => throw new ArgumentOutOfRangeException(nameof(request)),
+            };
+            _plans[key] = replaced;
+            receipts.UpsertAsync(WithDeliveryFailures(
+                DeliveryPlanProgress.ApplyToReceipt(receipt, replaced), request.DeliveryFailures), ct)
+                .GetAwaiter().GetResult();
+            return new PlanReplacement(replaced, fresh);
+        }
+    }
+
+    public async Task<ProgressRead> ReadProgressAsync(
+        string ownerId, string operationId, DateTime scheduledUtc, string claimId,
+        CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(ownerId, operationId, scheduledUtc, claimId);
+        if (receipt.AnswerVersion is null || receipt.PlanVersion is null)
+            throw new Phase3ConsistencyException(
+                "plan progress requires committed answer and plan pointers");
+        lock (_gate)
+        {
+            var key = Key(ownerId, operationId, scheduledUtc);
+            var answer = _answers.TryGetValue(key, out var stored)
+                ? stored
+                : throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt,
+                    "answer row is missing");
+            var plan = _plans.TryGetValue(key, out var existing)
+                ? existing
+                : throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt,
+                    "plan row is missing");
+            if (plan.AnswerVersion != receipt.AnswerVersion)
+                throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt,
+                    "plan references another answer");
+            return new ProgressRead(plan, answer);
+        }
+    }
+
+    public async Task<int> TrackGenerationAsync(
+        TrackGenerationRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        lock (_gate)
+        {
+            var updated = receipt with
+            {
+                GenerationAttempts = receipt.GenerationAttempts + 1,
+                ErrorSummary = request.Summary,
+            };
+            receipts.UpsertAsync(updated, ct).GetAwaiter().GetResult();
+            return updated.GenerationAttempts;
+        }
+    }
+
+    public async Task<int> TrackDeliveryAsync(
+        TrackDeliveryRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        lock (_gate)
+        {
+            var updated = receipt with
+            {
+                Attempts = receipt.Attempts + 1,
+                DeliveryTransientFailures = receipt.DeliveryTransientFailures + 1,
+                ErrorSummary = request.Summary,
+            };
+            receipts.UpsertAsync(updated, ct).GetAwaiter().GetResult();
+            return updated.DeliveryTransientFailures;
+        }
+    }
+
+    public async Task FailAsync(FailRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        lock (_gate)
+        {
+            receipts.UpsertAsync(receipt with
+            {
+                Status = "failed",
+                ErrorSummary = request.ErrorSummary,
+                Attempts = receipt.Attempts + request.HttpAttempts,
+                DeliveryTransientFailures = receipt.DeliveryTransientFailures + request.DeliveryFailures,
+            }, ct).GetAwaiter().GetResult();
+        }
+    }
+
+    private static DeliveryReceipt WithDeliveryFailures(DeliveryReceipt receipt, int failures) =>
+        receipt with { DeliveryTransientFailures = receipt.DeliveryTransientFailures + failures };
+
+    public async Task CompleteAsync(CompleteRequest request, CancellationToken ct = default)
+    {
+        var receipt = await OwnedReceiptAsync(request.OwnerId, request.OperationId,
+            request.ScheduledUtc, request.ClaimId);
+        var op = await ActiveOperationAsync(request.OwnerId, request.OperationId);
+        if (receipt.AnswerVersion is null || receipt.PlanVersion is null)
+            throw new Phase3ConsistencyException("completion requires committed answer and plan pointers");
+        lock (_gate)
+        {
+            var key = Key(request.OwnerId, request.OperationId, request.ScheduledUtc);
+            var answer = _answers.TryGetValue(key, out var stored)
+                ? stored
+                : throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt, "answer row is missing");
+            var plan = _plans.TryGetValue(key, out var existing)
+                ? existing
+                : throw new Phase3PayloadException(Phase3FailureCodes.PayloadCorrupt, "plan row is missing");
+            if (plan.Leaves.Any(l => !l.Confirmed))
+                throw new Phase3ConsistencyException("completion requires all leaves confirmed");
+            if (answer.Kind == AnswerKind.Answer)
+            {
+                _memory.TryGetValue((request.OwnerId, request.OperationId), out var memory);
+                var publish = MemoryPublication.Decide(memory,
+                    request.OwnerId, request.OperationId,
+                    Phase3Times.Utc(request.ScheduledUtc),
+                    Phase3Times.Utc(op.CreatedUtc.UtcDateTime),
+                    answer, clock.UtcNow);
+                if (publish is not null)
+                    _memory[(request.OwnerId, request.OperationId)] = publish;
+            }
+            receipts.UpsertAsync(WithDeliveryFailures(
+                receipt with { Status = "sent" }, request.DeliveryFailures), ct)
+                .GetAwaiter().GetResult();
+        }
+    }
+
+    private async Task<DeliveryReceipt> OwnedReceiptAsync(
+        string ownerId, string operationId, DateTime scheduledUtc, string claimId)
+    {
+        var receipt = await receipts.GetAsync(ownerId, operationId, scheduledUtc)
+            ?? throw new ClaimLostException();
+        if (receipt.ClaimId is null || receipt.ClaimId != claimId ||
+            OccurrenceExecution.IsClaimStale(receipt, clock.UtcNow))
+            throw new ClaimLostException();
+        return receipt;
+    }
+
+    private async Task<OperationRecord> ActiveOperationAsync(string ownerId, string operationId)
+    {
+        var op = await operations.GetAsync(ownerId, operationId)
+            ?? throw new Phase3OperationStoppedException($"operation {operationId} is missing");
+        if (op.Status is not (OperationStatus.Active or OperationStatus.Starting))
+            throw new Phase3OperationStoppedException($"operation {operationId} is {op.Status}");
+        return op;
+    }
+
+    private static void RequirePointers(DeliveryReceipt receipt)
+    {
+        if (receipt.AnswerVersion is null || receipt.PlanVersion is null)
+            throw new Phase3ConsistencyException("plan progress requires committed answer and plan pointers");
+    }
+}
+
+public sealed class FakeLlmExecutor : ILlmPromptExecutor, IPhase3LlmExecutor
 {
     public List<LlmPrompt> Calls { get; } = new();
     public Func<LlmPrompt, Task<LlmResult>>? Handler { get; set; }
+    public List<IReadOnlyList<ChatMessage>> Phase3Calls { get; } = new();
+    public Func<IReadOnlyList<ChatMessage>, Task<LlmResult>>? Phase3Handler { get; set; }
 
     public static LlmResult Answer(string text, IReadOnlyList<LlmSource>? sources = null) =>
         new(text, sources ?? [], new LlmUsage(10, 20, sources?.Count ?? 0, (sources?.Count ?? 0) > 0),
             "OpenRouter", "deepseek/deepseek-v4.1-flash", (sources?.Count ?? 0) > 0);
+
+    public Task<LlmResult> ExecuteMessagesAsync(
+        IReadOnlyList<ChatMessage> messages, int maxSourceScalars, CancellationToken ct = default)
+    {
+        Phase3Calls.Add(messages);
+        return Phase3Handler is not null
+            ? Phase3Handler(messages)
+            : Task.FromResult(Answer("Canned answer."));
+    }
 
     public Task<LlmResult> ExecuteAsync(LlmPrompt prompt, CancellationToken ct = default)
     {
@@ -270,6 +611,21 @@ public sealed class FakeTelegramSender : ITelegramSender
     private readonly Queue<Func<long, string, Task<long>>> _script = new();
     public List<(long ChatId, string Text)> Sent { get; } = new();
     public Exception? AlwaysThrow { get; set; }
+    public List<(long ChatId, TelegramPayloadKind Kind, string Content)> Payloads { get; } = new();
+    public Func<TelegramPayload, Exception?>? RejectPayload { get; set; }
+    private long _nextId = 900;
+
+    public Task<long> SendPayloadAsync(long chatId, TelegramPayload payload, CancellationToken ct = default)
+    {
+        // Legacy HTML goes through the script-driven text seam, mirroring
+        // the default interface adapter; typed payloads use rejections.
+        if (payload.Kind == TelegramPayloadKind.LegacyHtml)
+            return SendTextAsync(chatId, payload.Content, ct);
+        Payloads.Add((chatId, payload.Kind, payload.Content));
+        if (RejectPayload?.Invoke(payload) is { } ex)
+            return Task.FromException<long>(ex);
+        return Task.FromResult(Interlocked.Increment(ref _nextId));
+    }
 
     public void EnqueueThrow(Exception ex) =>
         _script.Enqueue((_, _) => Task.FromException<long>(ex));

@@ -265,6 +265,99 @@ public sealed class DeliveryTests
     }
 
     [Fact]
+    public async Task LegacyContentRejection_PersistsPlainFallback_BeforeSending()
+    {
+        var ops = new FakeOperationStore();
+        var d = new FakeDeliveryStore();
+        var p = new FakePayloadStore();
+        var sender = new FakeTelegramSender();
+        ops.Seed(TestRecords.Operation("42", "op1"));
+        var h = new DeliveryHandler(ops, d, p, sender, new FakeLlmExecutor(), TestLlm.Options());
+
+        await p.PersistAsync("42", "op1", Scheduled, ["<b>one</b>", "<i>two</i>"], version: "v0");
+        await d.UpsertAsync(new DeliveryReceipt("42", "op1", Scheduled,
+            OccurrenceExecution.StatusGenerating, 0, null, null,
+            ExecutionStatus: "generated", TotalParts: 2, PayloadVersion: "v0",
+            UpdatedUtc: DateTimeOffset.UtcNow - TimeSpan.FromHours(1)));
+        sender.EnqueueThrow(new TelegramSendException(400, "Bad Request: can't parse entities"));
+
+        var result = await h.AttemptOnceAsync("42", "op1", Scheduled, 0);
+
+        Assert.Equal(SingleAttemptOutcome.Sent, result.Outcome);
+        var receipt = await d.GetAsync("42", "op1", Scheduled);
+        Assert.Equal(2, receipt!.SentParts);
+        Assert.Equal("v0-compat-0", receipt.PayloadVersion);
+        Assert.Equal(2, receipt.TotalParts);
+        // Fallback persisted before sending; legacy originals retained.
+        var fallback = await p.LoadAsync("42", "op1", Scheduled, version: "v0-compat-0");
+        Assert.Equal(["one", "<i>two</i>"], fallback);
+        var original = await p.LoadAsync("42", "op1", Scheduled, version: "v0");
+        Assert.Equal(["<b>one</b>", "<i>two</i>"], original);
+        // Confirmed prefix keeps working: first send is the plain replacement.
+        Assert.Equal("one", sender.Sent[0].Text);
+        Assert.Equal("<i>two</i>", sender.Sent[1].Text);
+    }
+
+    [Fact]
+    public async Task LegacyUnknownMethod_FallsBackToBoundedPlainParts()
+    {
+        var ops = new FakeOperationStore();
+        var d = new FakeDeliveryStore();
+        var p = new FakePayloadStore();
+        var sender = new FakeTelegramSender();
+        ops.Seed(TestRecords.Operation("42", "op1"));
+        var h = new DeliveryHandler(ops, d, p, sender, new FakeLlmExecutor(), TestLlm.Options());
+
+        var longHtml = "<b>" + new string('x', 5000) + "</b>";
+        await p.PersistAsync("42", "op1", Scheduled, [longHtml], version: "v0");
+        await d.UpsertAsync(new DeliveryReceipt("42", "op1", Scheduled,
+            OccurrenceExecution.StatusGenerating, 0, null, null,
+            ExecutionStatus: "generated", TotalParts: 1, PayloadVersion: "v0",
+            UpdatedUtc: DateTimeOffset.UtcNow - TimeSpan.FromHours(1)));
+        sender.EnqueueThrow(new TelegramUnknownMethodException(404, 404, "unknown method"));
+
+        var result = await h.AttemptOnceAsync("42", "op1", Scheduled, 0);
+
+        Assert.Equal(SingleAttemptOutcome.Sent, result.Outcome);
+        var receipt = await d.GetAsync("42", "op1", Scheduled);
+        Assert.Equal(2, receipt!.TotalParts);
+        Assert.Equal(2, receipt.SentParts);
+        Assert.All(sender.Sent, m => Assert.True(m.Text.Length <= 4096));
+        Assert.Equal(4096, sender.Sent[0].Text.Length);
+        Assert.Equal(904, sender.Sent[1].Text.Length);
+        Assert.Equal(new string('x', 5000), string.Concat(sender.Sent.Select(m => m.Text)));
+    }
+
+    [Fact]
+    public async Task LegacyRepeatedContentRejection_FailsOccurrenceWithoutLoop()
+    {
+        var ops = new FakeOperationStore();
+        var d = new FakeDeliveryStore();
+        var p = new FakePayloadStore();
+        var sender = new FakeTelegramSender
+        {
+            AlwaysThrow = new TelegramSendException(400, "Bad Request: can't parse entities"),
+        };
+        ops.Seed(TestRecords.Operation("42", "op1"));
+        var h = new DeliveryHandler(ops, d, p, sender, new FakeLlmExecutor(), TestLlm.Options());
+
+        await p.PersistAsync("42", "op1", Scheduled, ["<b>one</b>"], version: "v0");
+        await d.UpsertAsync(new DeliveryReceipt("42", "op1", Scheduled,
+            OccurrenceExecution.StatusGenerating, 0, null, null,
+            ExecutionStatus: "generated", TotalParts: 1, PayloadVersion: "v0",
+            UpdatedUtc: DateTimeOffset.UtcNow - TimeSpan.FromHours(1)));
+
+        var result = await h.AttemptOnceAsync("42", "op1", Scheduled, 0);
+
+        Assert.Equal(SingleAttemptOutcome.OccurrenceFailed, result.Outcome);
+        var receipt = await d.GetAsync("42", "op1", Scheduled);
+        Assert.Equal("failed", receipt!.Status);
+        Assert.Equal("content_rejected", receipt.ErrorSummary);
+        Assert.Equal("v0-compat-0", receipt.PayloadVersion);
+        Assert.Equal(OperationStatus.Active, (await ops.GetAsync("42", "op1"))!.Status);
+    }
+
+    [Fact]
     public async Task DeletionDuringGeneration_DiscardsResult()
     {
         var ops = new FakeOperationStore();

@@ -1,6 +1,8 @@
 // Delivery reliability: error classification, retry plan, and the delivery
 // activity flow. Runs in the delivery activity (non-orchestration code),
 // with long retry waits persisted through Durable timers by the caller.
+using Microsoft.Extensions.Logging;
+
 namespace RecurringTasksBot.Core;
 
 public enum SendFailureKind
@@ -11,15 +13,25 @@ public enum SendFailureKind
 
 public sealed record SendFailure(SendFailureKind Kind, string Summary, TimeSpan? RetryAfter = null);
 
-public sealed class TelegramSendException(
+public class TelegramSendException(
     int? httpStatusCode,
     string description,
-    TimeSpan? retryAfter = null) : Exception(description)
+    TimeSpan? retryAfter = null,
+    int? apiErrorCode = null) : Exception(description)
 {
     public int? HttpStatusCode { get; } = httpStatusCode;
+    public int? ApiErrorCode { get; } = apiErrorCode;
     public string Description { get; } = description;
     public TimeSpan? RetryAfter { get; } = retryAfter;
 }
+
+// The rich endpoint itself is unavailable: the delivery service must switch
+// to regular literal messages, never retry the rich format. Derives from
+// TelegramSendException so legacy catch sites keep working.
+public sealed class TelegramUnknownMethodException(
+    int? httpStatusCode,
+    int? apiErrorCode,
+    string description) : TelegramSendException(httpStatusCode, description, null, apiErrorCode);
 
 public static class DeliveryPolicy
 {
@@ -28,23 +40,24 @@ public static class DeliveryPolicy
     public static SendFailure Classify(Exception exception)
     {
         if (exception is TelegramSendException tg)
-            return ClassifyTelegram(tg.HttpStatusCode, tg.Description, tg.RetryAfter);
+            return ClassifyTelegram(tg.HttpStatusCode, tg.Description, tg.RetryAfter, tg.ApiErrorCode);
         return new SendFailure(SendFailureKind.Transient, $"send failed: {exception.Message}");
     }
 
     // Permanent: recipient-side failures (blocked bot, unknown chat).
     // Everything else (network, 5xx, 429) is transient with backoff.
-    public static SendFailure ClassifyTelegram(int? httpStatus, string description, TimeSpan? retryAfter = null)
+    public static SendFailure ClassifyTelegram(
+        int? httpStatus, string description, TimeSpan? retryAfter = null, int? apiErrorCode = null)
     {
         var desc = description ?? string.Empty;
-        if (httpStatus == 403 ||
+        if (httpStatus == 403 || apiErrorCode == 403 ||
             desc.Contains("blocked", StringComparison.OrdinalIgnoreCase) ||
             desc.Contains("chat not found", StringComparison.OrdinalIgnoreCase) ||
             desc.Contains("user not found", StringComparison.OrdinalIgnoreCase) ||
             desc.Contains("deactivated", StringComparison.OrdinalIgnoreCase))
             return new SendFailure(SendFailureKind.Permanent, $"permanent recipient failure: {desc}");
 
-        if (httpStatus == 429)
+        if (httpStatus == 429 || apiErrorCode == 429)
             return new SendFailure(SendFailureKind.Transient,
                 $"rate limited: {desc}", retryAfter ?? TimeSpan.FromSeconds(30));
 
@@ -155,8 +168,37 @@ public sealed class DeliveryHandler(
     ITelegramSender sender,
     ILlmPromptExecutor llm,
     LlmOptions llmOptions,
-    TimeSpan? claimRenewalInterval = null)
+    TimeSpan? claimRenewalInterval = null,
+    IOccurrenceRepository? occurrences = null,
+    Phase3Options? phase3Options = null,
+    IPhase3LlmExecutor? phase3Llm = null,
+    IPhase3Clock? clock = null,
+    ILogger? logger = null)
 {
+    private IPhase3Clock ActiveClock => clock ?? SystemClock.Instance;
+
+    private Phase3Options ActivePhase3 => phase3Options ?? Phase3Config.Read(_ => null);
+
+    private IPhase3LlmExecutor ActivePhase3Llm => phase3Llm ??
+        throw new InvalidOperationException("Phase 3 delivery requires an IPhase3LlmExecutor.");
+
+    // A receipt carries the new flow once it declares schema 3. Anything
+    // older with a persisted deliverable stays on the legacy transport.
+    private static bool UseV3(DeliveryReceipt receipt) =>
+        receipt.PayloadSchemaVersion == 3 || !HasPersistedPayload(receipt);
+
+    // Literal-reply canary: emitted at reply build time (not delivery time)
+    // so the dashboard can answer whether delivered text was LLM-authored
+    // or a literal fallback, with the persisted and receipt model versions.
+    // Never logs prompts, answers, or payload contents.
+    private void LogReplyCanary(string ownerId, string operationId, DateTime scheduledUtc,
+        string replySource, string provider, string model, int? receiptSchemaVersion) =>
+        logger?.LogInformation(
+            "Reply built for {OwnerId}/{OperationId} at {ScheduledUtc:u}: " +
+            "replySource={ReplySource} provider={Provider} model={Model} receiptSchema={ReceiptSchema}.",
+            ownerId, operationId, scheduledUtc, replySource, provider, model,
+            receiptSchemaVersion?.ToString() ?? "legacy");
+
     // One attempt for orchestration-driven retries: the caller persists long
     // waits as Durable timers, advancing AttemptIndex only for work retries.
     public async Task<SingleAttemptResult> AttemptOnceAsync(
@@ -175,6 +217,18 @@ public sealed class DeliveryHandler(
         if (existing is { Status: "failed" })
             return new SingleAttemptResult(SingleAttemptOutcome.OccurrenceFailed, existing.Attempts, null, existing.ErrorSummary);
 
+        var workStart = ActiveClock.UtcNow;
+        if (occurrences is not null)
+        {
+            var invalid = ValidatePhase3Config();
+            if (invalid is not null)
+            {
+                var pre = await deliveries.GetAsync(ownerId, operationId, scheduledUtc, ct);
+                return new SingleAttemptResult(SingleAttemptOutcome.OccurrenceFailed,
+                    pre?.Attempts ?? 0, null, invalid);
+            }
+        }
+
         var claimId = Guid.NewGuid().ToString("N");
         if (!await deliveries.TryClaimAsync(ownerId, operationId, scheduledUtc, claimId, ct))
             return ClaimWait();
@@ -186,6 +240,25 @@ public sealed class DeliveryHandler(
         {
             var receipt = (await deliveries.GetAsync(ownerId, operationId, scheduledUtc, work.Token))!;
             if (receipt.ClaimId != claimId) throw new ClaimLostException();
+            // Unknown payload versions fail before either execution path is
+            // selected: data is retained and nothing regenerates.
+            if (receipt.PayloadSchemaVersion is { } schema &&
+                schema != Phase3Limits.SchemaVersion)
+            {
+                var unsupported = receipt with
+                {
+                    Status = "failed",
+                    ErrorSummary = Phase3FailureCodes.UnsupportedPayloadVersion,
+                    UpdatedUtc = DateTimeOffset.UtcNow,
+                };
+                await deliveries.UpsertAsync(unsupported, work.Token);
+                return new SingleAttemptResult(SingleAttemptOutcome.OccurrenceFailed,
+                    receipt.Attempts, null, Phase3FailureCodes.UnsupportedPayloadVersion);
+            }
+            if (occurrences is not null && UseV3(receipt))
+                return await CapV3Async(
+                    await AttemptV3Async(op, receipt, claimId, scheduledUtc, attemptIndex, work.Token, workStart),
+                    ownerId, operationId, scheduledUtc, claimId, attemptIndex, work.Token);
             if (!HasPersistedPayload(receipt))
             {
                 var generated = await GenerateOnceAsync(op, receipt, work.Token);
@@ -333,6 +406,8 @@ public sealed class DeliveryHandler(
             ErrorSummary = null,
             UpdatedUtc = DateTimeOffset.UtcNow,
         }, ct);
+        LogReplyCanary(fresh.OwnerId, fresh.OperationId, scheduledUtc, "llm-authored",
+            result.Provider, result.Model, receipt.PayloadSchemaVersion);
 
         // An in-flight LLM request may finish after deletion: discard it.
         var after = await operations.GetAsync(fresh.OwnerId, fresh.OperationId, ct);
@@ -388,6 +463,9 @@ public sealed class DeliveryHandler(
             ErrorSummary = sanitizedSummary,
             UpdatedUtc = DateTimeOffset.UtcNow,
         }, ct);
+        LogReplyCanary(op.OwnerId, op.OperationId, receipt.ScheduledUtc.UtcDateTime,
+            "failure-notice-literal", llmOptions.Provider, llmOptions.Model,
+            receipt.PayloadSchemaVersion);
         return null;
     }
 
@@ -433,7 +511,8 @@ public sealed class DeliveryHandler(
             attempts++;
             try
             {
-                var messageId = await sender.SendRichTextAsync(live.ChatId, parts[i], ct);
+                var messageId = await sender.SendPayloadAsync(
+                    live.ChatId, new TelegramPayload(TelegramPayloadKind.LegacyHtml, parts[i]), ct);
                 sentIds.Add(messageId);
                 current = current with
                 {
@@ -445,6 +524,33 @@ public sealed class DeliveryHandler(
                     UpdatedUtc = DateTimeOffset.UtcNow,
                 };
                 await deliveries.UpsertAsync(current, ct);
+            }
+            catch (TelegramUnknownMethodException)
+            {
+                // Rich endpoint unavailable: replace the unsent part with
+                // bounded plain parts, persist them before any send, and keep
+                // the confirmed prefix untouched.
+                var fallback = await PersistLegacyFallbackAsync(op, current, parts, i,
+                    PlainFallbackParts(parts[i]), ct);
+                if (fallback.Failure is not null)
+                    return fallback.Failure;
+                (parts, current) = (fallback.Parts, fallback.Receipt);
+                i--; // Re-send from the first replacement part after the loop increment.
+                continue;
+            }
+            catch (TelegramSendException ex) when (TelegramErrorClassifier.ClassifyException(ex).Disposition
+                is TelegramDisposition.ContentRejection)
+            {
+                // Definitely rejected unsent part: persist the literal
+                // fallback text and its plan before sending; confirmed parts
+                // keep their IDs and the legacy originals stay stored.
+                var fallback = await PersistLegacyFallbackAsync(op, current, parts, i,
+                    PlainFallbackParts(parts[i]), ct);
+                if (fallback.Failure is not null)
+                    return fallback.Failure;
+                (parts, current) = (fallback.Parts, fallback.Receipt);
+                i--; // Re-send from the first replacement part after the loop increment.
+                continue;
             }
             catch (Exception ex) when (ex is not ClaimLostException and not OperationCanceledException)
             {
@@ -489,6 +595,661 @@ public sealed class DeliveryHandler(
         return new SingleAttemptResult(SingleAttemptOutcome.Sent, attempts, null, null);
     }
 
+    // Legacy HTML part converted to literal text, split for the
+    // conservative 4,096-unit plain transport. An empty conversion drops
+    // the part instead of sending a blank message.
+    private static IReadOnlyList<string> PlainFallbackParts(string htmlPart)
+    {
+        var plain = RichMessageParts.ToPlainText(htmlPart);
+        if (string.IsNullOrWhiteSpace(plain))
+            return [];
+        return Phase3LiteralChunker.SplitConservative(plain);
+    }
+
+    // Persists bounded replacement parts for one definitely-rejected,
+    // unsent legacy part and repoints the receipt before any send: the
+    // persisted list is the compatibility plan. The confirmed prefix
+    // (SentParts/MessageIds) is preserved, and the legacy originals stay
+    // stored under the previous payload version. A part that was already
+    // replaced once and rejects again fails the occurrence instead of
+    // rewriting versions forever.
+    private async Task<(IReadOnlyList<string> Parts, DeliveryReceipt Receipt, SingleAttemptResult? Failure)>
+        PersistLegacyFallbackAsync(
+            OperationRecord op, DeliveryReceipt current, IReadOnlyList<string> parts, int index,
+            IReadOnlyList<string> replacement, CancellationToken ct)
+    {
+        var marker = $"-compat-{index}";
+        if (current.PayloadVersion?.EndsWith(marker, StringComparison.Ordinal) == true)
+        {
+            var failed = current with
+            {
+                Status = "failed",
+                ErrorSummary = "content_rejected",
+                UpdatedUtc = DateTimeOffset.UtcNow,
+            };
+            await deliveries.UpsertAsync(failed, ct);
+            return ([], failed, new SingleAttemptResult(SingleAttemptOutcome.OccurrenceFailed,
+                current.Attempts, null, "content_rejected"));
+        }
+        var updated = parts.Take(index).Concat(replacement).Concat(parts.Skip(index + 1)).ToList();
+        var version = $"{current.PayloadVersion ?? current.ClaimId}{marker}";
+        var scheduledUtc = current.ScheduledUtc.UtcDateTime;
+        try
+        {
+            await payloads.PersistAsync(op.OwnerId, op.OperationId,
+                scheduledUtc, updated, ct, version: version);
+        }
+        catch (TransientStoreException ex)
+        {
+            return ([], current, new SingleAttemptResult(SingleAttemptOutcome.NeedRetry,
+                current.Attempts, TimeSpan.FromSeconds(10), ex.Message));
+        }
+        catch (ClaimLostException)
+        {
+            return ([], current, ClaimWait());
+        }
+        var receipt = current with
+        {
+            PayloadVersion = version,
+            TotalParts = updated.Count,
+            SentParts = index,
+            UpdatedUtc = DateTimeOffset.UtcNow,
+        };
+        try
+        {
+            await deliveries.UpsertAsync(receipt, ct);
+        }
+        catch (TransientStoreException ex)
+        {
+            return ([], current, new SingleAttemptResult(SingleAttemptOutcome.NeedRetry,
+                current.Attempts, TimeSpan.FromSeconds(10), ex.Message));
+        }
+        catch (ClaimLostException)
+        {
+            return ([], current, ClaimWait());
+        }
+        return (updated, receipt, null);
+    }
+
+    // Phase 3 configuration is rejected before any claim, send, or
+    // publication when the repository is wired; legacy callers are unaffected.
+    private string? ValidatePhase3Config()
+    {
+        if (phase3Llm is null)
+            return "Phase 3 delivery requires an IPhase3LlmExecutor.";
+        var options = ActivePhase3;
+        try
+        {
+            options.Validate();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ex.Message;
+        }
+        if (llmOptions.RequestTimeout > Phase3Limits.MaxLlmTimeout)
+            return $"LLM request timeout of {llmOptions.RequestTimeout.TotalSeconds:F0}s " +
+                "exceeds the 540-second activity budget.";
+        try
+        {
+            Phase3SystemTemplate.Render(options.TargetAnswerTextChars,
+                Phase3Limits.RichTextChars, AdminInstruction());
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ex.Message;
+        }
+        return null;
+    }
+
+    private string? AdminInstruction() =>
+        string.IsNullOrWhiteSpace(llmOptions.SystemInstruction) ? null : llmOptions.SystemInstruction;
+
+    private static TimeSpan StorageDelay(int attemptIndex) => attemptIndex switch
+    {
+        0 => TimeSpan.FromSeconds(5),
+        1 => TimeSpan.FromSeconds(30),
+        _ => TimeSpan.FromMinutes(5),
+    };
+
+    private bool FitsTime(DateTimeOffset workStart, TimeSpan needed) =>
+        ActiveClock.UtcNow - workStart + needed <= Phase3Limits.ActivityWorkBudget;
+
+    private static SingleAttemptResult StorageRetry(int attemptIndex, string? summary) =>
+        new(SingleAttemptOutcome.NeedRetry, 0, StorageDelay(attemptIndex), summary);
+
+    private static SingleAttemptResult YieldRetry() =>
+        new(SingleAttemptOutcome.NeedRetry, 0, TimeSpan.FromSeconds(1), null);
+
+    private static SingleAttemptResult Stopped() =>
+        new(SingleAttemptOutcome.SkippedStopped, 0, null, null);
+
+    private async Task<SingleAttemptResult> FailV3Async(
+        string ownerId, string operationId, DateTime scheduledUtc, string claimId,
+        string summary, int attempts, int httpAttempts, CancellationToken ct)
+    {
+        try
+        {
+            await occurrences!.FailAsync(new FailRequest(ownerId, operationId, scheduledUtc,
+                claimId, summary, httpAttempts), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { }
+        return new SingleAttemptResult(SingleAttemptOutcome.OccurrenceFailed, attempts, null, summary);
+    }
+
+    private async Task<SingleAttemptResult> CapV3Async(
+        SingleAttemptResult result, string ownerId, string operationId,
+        DateTime scheduledUtc, string claimId, int attemptIndex, CancellationToken ct)
+    {
+        if (result.Outcome != SingleAttemptOutcome.NeedRetry ||
+            attemptIndex < OccurrenceExecution.MaxCombinedRetriesAfterInitial)
+            return result;
+        return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+            result.ErrorSummary ?? "retry budget exhausted", result.Attempts, 0, ct);
+    }
+
+    private async Task<SingleAttemptResult> AttemptV3Async(
+        OperationRecord op, DeliveryReceipt receipt, string claimId, DateTime scheduledUtc,
+        int attemptIndex, CancellationToken ct, DateTimeOffset workStart)
+    {
+        var ownerId = op.OwnerId;
+        var operationId = op.OperationId;
+        var phase3 = ActivePhase3;
+        var attempts = receipt.Attempts;
+        var executionStarted = ActiveClock.UtcNow.UtcDateTime;
+
+        FrozenContextRecord context;
+        try
+        {
+            var instruction = Phase3SystemTemplate.Render(phase3.TargetAnswerTextChars,
+                Phase3Limits.RichTextChars, AdminInstruction());
+            var init = await occurrences!.InitializeContextAsync(new FrozenContextRequest(
+                ownerId, operationId, scheduledUtc, claimId,
+                new FrozenContextInputs(instruction, phase3.TargetAnswerTextChars,
+                    Phase3Limits.RichTextChars, phase3.MemoryMode, executionStarted)), ct);
+            context = init.Context;
+        }
+        catch (TransientStoreException ex) { return StorageRetry(attemptIndex, ex.Message); }
+        catch (ClaimLostException) { return ClaimWait(); }
+        catch (Phase3OperationStoppedException) { return Stopped(); }
+        catch (Phase3PayloadException ex)
+        {
+            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Code, attempts, 0, ct);
+        }
+
+        var current = await deliveries.GetAsync(ownerId, operationId, scheduledUtc, ct);
+        if (current is null || current.ClaimId != claimId)
+            return ClaimWait();
+        attempts = current.Attempts;
+        if (current.AnswerVersion is null || current.PlanVersion is null)
+        {
+            var generated = await GenerateV3Async(op, context, phase3, claimId, scheduledUtc,
+                executionStarted, attemptIndex, attempts, ct, workStart);
+            if (generated is not null)
+                return await CapV3Async(generated, ownerId, operationId, scheduledUtc,
+                    claimId, attemptIndex, ct);
+            current = await deliveries.GetAsync(ownerId, operationId, scheduledUtc, ct);
+            if (current is null || current.ClaimId != claimId)
+                return ClaimWait();
+            attempts = current.Attempts;
+        }
+
+        return await CapV3Async(
+            await DeliverV3PlanAsync(op, claimId, scheduledUtc, attemptIndex, attempts, ct, workStart),
+            ownerId, operationId, scheduledUtc, claimId, attemptIndex, ct);
+    }
+
+    // Returns null when generation is persisted and delivery follows.
+    private async Task<SingleAttemptResult?> GenerateV3Async(
+        OperationRecord op, FrozenContextRecord context, Phase3Options phase3,
+        string claimId, DateTime scheduledUtc, DateTime executionStarted,
+        int attemptIndex, int attempts, CancellationToken ct, DateTimeOffset workStart)
+    {
+        var ownerId = op.OwnerId;
+        var operationId = op.OperationId;
+        string? previous = context.PreviousReplyPresent &&
+            context.MemoryMode.Equals(Phase3Options.PreviousSuccessfulReply, StringComparison.Ordinal)
+            ? context.PreviousReplyAnswer
+            : null;
+        var snapshot = previous is null && context.PreviousReplyPresent
+            ? context.ToSnapshot() with
+            {
+                PreviousReplyPresent = false,
+                PreviousReplyScheduledAtUtc = null,
+                PreviousReplyExecutedAtUtc = null,
+            }
+            : context.ToSnapshot();
+        var messages = Phase3ContextEnvelope.BuildMessages(
+            context.EffectiveSystemInstruction, snapshot, previous);
+        if (!Phase3ContextBudget.FitsBudget(messages, phase3, llmOptions.CompletionTokenBudget))
+            return await TerminalNoticeAsync(op, claimId, scheduledUtc, executionStarted,
+                attemptIndex, attempts, Phase3FailureCodes.ContextBudgetExceeded, ct, workStart);
+
+        if (!FitsTime(workStart, llmOptions.RequestTimeout + TimeSpan.FromSeconds(30)))
+            return YieldRetry();
+
+        LlmResult result;
+        try
+        {
+            result = await ActivePhase3Llm.ExecuteMessagesAsync(
+                messages, phase3.MaxAnswerSourceChars, ct);
+        }
+        catch (LlmExecutionException ex) when (ex.Kind is LlmFailureKind.Transient or LlmFailureKind.EmptyResponse)
+        {
+            var (failure, count) = await TrackGenerationV3Async(ownerId, operationId, scheduledUtc,
+                claimId, GenerationPolicy.Sanitize(ex.Summary), attemptIndex, ct);
+            if (failure is not null)
+                return failure;
+            if (count > llmOptions.GenerationRetries)
+                return await TerminalNoticeAsync(op, claimId, scheduledUtc, executionStarted,
+                    attemptIndex, attempts, GenerationPolicy.Sanitize(ex.Summary), ct, workStart);
+            return new SingleAttemptResult(SingleAttemptOutcome.NeedRetry, attempts,
+                GenerationPolicy.RetryDelay(count - 1, ex.RetryAfter),
+                GenerationPolicy.Sanitize(ex.Summary));
+        }
+        catch (LlmExecutionException ex)
+        {
+            return await TerminalNoticeAsync(op, claimId, scheduledUtc, executionStarted,
+                attemptIndex, attempts, GenerationPolicy.Sanitize(ex.Summary), ct, workStart);
+        }
+
+        if (string.IsNullOrWhiteSpace(result.AnswerText))
+        {
+            var (failure, count) = await TrackGenerationV3Async(ownerId, operationId, scheduledUtc,
+                claimId, "empty LLM response", attemptIndex, ct);
+            if (failure is not null)
+                return failure;
+            if (count > llmOptions.GenerationRetries)
+                return await TerminalNoticeAsync(op, claimId, scheduledUtc, executionStarted,
+                    attemptIndex, attempts, "empty LLM response", ct, workStart);
+            return new SingleAttemptResult(SingleAttemptOutcome.NeedRetry, attempts,
+                GenerationPolicy.RetryDelay(count - 1), "empty LLM response");
+        }
+
+        string canonical;
+        try
+        {
+            canonical = AnswerSourceBound.RequireWithinBound(
+                AnswerSourceBound.Canonicalize(result.AnswerText), phase3.MaxAnswerSourceChars);
+        }
+        catch (Phase3PayloadException)
+        {
+            return await TerminalNoticeAsync(op, claimId, scheduledUtc, executionStarted,
+                attemptIndex, attempts, Phase3FailureCodes.AnswerSourceLimit, ct, workStart);
+        }
+
+        var answer = AnswerArtifact.Create(Phase3Versions.New(), AnswerKind.Answer, canonical);
+        var literalRequired = Phase3CapabilityGate.RequiresLiteral(canonical);
+        var initialPlan = literalRequired
+            ? DeliveryPlan.CreateInitialLiteral(answer.AnswerVersion, canonical)
+            : DeliveryPlan.CreateInitial(answer.AnswerVersion, canonical);
+        LogReplyCanary(ownerId, operationId, scheduledUtc,
+            literalRequired ? "literal" : "llm-authored",
+            result.Provider, result.Model, 3);
+        try
+        {
+            await occurrences!.PersistGenerationAsync(new PersistGenerationRequest(
+                ownerId, operationId, scheduledUtc, claimId, answer, initialPlan,
+                executionStarted,
+                new ReceiptUsage(result.Provider, result.Model, result.Usage.PromptTokens,
+                    result.Usage.CompletionTokens, result.Usage.SearchResults, result.Usage.SearchUsed)), ct);
+        }
+        catch (TransientStoreException ex) { return StorageRetry(attemptIndex, ex.Message); }
+        catch (ClaimLostException) { return ClaimWait(); }
+        catch (Phase3OperationStoppedException) { return Stopped(); }
+        catch (Phase3PayloadException ex)
+        {
+            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Code, attempts, 0, ct);
+        }
+        return null;
+    }
+
+    // Tracks one generation failure. Returns a failure result for
+    // storage/claim/corruption outcomes, otherwise null with the new
+    // attempt count for the caller's retry decision.
+    private async Task<(SingleAttemptResult? Failure, int Count)> TrackGenerationV3Async(
+        string ownerId, string operationId, DateTime scheduledUtc, string claimId,
+        string summary, int attemptIndex, CancellationToken ct)
+    {
+        try
+        {
+            var count = await occurrences!.TrackGenerationAsync(
+                new TrackGenerationRequest(ownerId, operationId, scheduledUtc, claimId, summary), ct);
+            return (null, count);
+        }
+        catch (TransientStoreException ex) { return (StorageRetry(attemptIndex, ex.Message), 0); }
+        catch (ClaimLostException) { return (ClaimWait(), 0); }
+        catch (Phase3PayloadException ex)
+        {
+            return (await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Code, 0, 0, ct), 0);
+        }
+    }
+
+    // Terminal pre-delivery failures deliver the persisted standard failure
+    // notice through the normal plan path when storage remains usable.
+    private async Task<SingleAttemptResult> TerminalNoticeAsync(
+        OperationRecord op, string claimId, DateTime scheduledUtc, DateTime executionStarted,
+        int attemptIndex, int attempts, string code, CancellationToken ct, DateTimeOffset workStart)
+    {
+        var ownerId = op.OwnerId;
+        var operationId = op.OperationId;
+        var notice = AnswerArtifact.Create(
+            Phase3Versions.New(), AnswerKind.FailureNotice, Phase3DeliveryText.FailureNotice);
+        var plan = DeliveryPlan.CreateInitial(notice.AnswerVersion, notice.Text);
+        LogReplyCanary(ownerId, operationId, scheduledUtc, "failure-notice-literal",
+            llmOptions.Provider, llmOptions.Model, 3);
+        try
+        {
+            await occurrences!.PersistGenerationAsync(new PersistGenerationRequest(
+                ownerId, operationId, scheduledUtc, claimId, notice, plan, executionStarted,
+                new ReceiptUsage(llmOptions.Provider, llmOptions.Model, 0, 0, 0, false), code), ct);
+        }
+        catch (TransientStoreException ex) { return StorageRetry(attemptIndex, ex.Message); }
+        catch (ClaimLostException) { return ClaimWait(); }
+        catch (Phase3OperationStoppedException) { return Stopped(); }
+        catch (Phase3PayloadException ex)
+        {
+            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Code, attempts, 0, ct);
+        }
+        return await CapV3Async(
+            await DeliverV3PlanAsync(op, claimId, scheduledUtc, attemptIndex, attempts, ct, workStart),
+            ownerId, operationId, scheduledUtc, claimId, attemptIndex, ct);
+    }
+
+    private async Task<SingleAttemptResult> DeliverV3PlanAsync(
+        OperationRecord op, string claimId, DateTime scheduledUtc,
+        int attemptIndex, int attempts, CancellationToken ct, DateTimeOffset workStart)
+    {
+        var ownerId = op.OwnerId;
+        var operationId = op.OperationId;
+        ProgressRead progress;
+        try
+        {
+            progress = await occurrences!.ReadProgressAsync(ownerId, operationId, scheduledUtc, claimId, ct);
+        }
+        catch (TransientStoreException ex) { return StorageRetry(attemptIndex, ex.Message); }
+        catch (ClaimLostException) { return ClaimWait(); }
+        catch (Phase3ConsistencyException ex)
+        {
+            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Message, attempts, 0, ct);
+        }
+        catch (Phase3PayloadException ex)
+        {
+            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Code, attempts, 0, ct);
+        }
+
+        var plan = progress.Plan;
+        var source = progress.Answer.Text;
+        while (true)
+        {
+            var leaf = plan.Leaves.FirstOrDefault(l => !l.Confirmed);
+            if (leaf is null)
+                break;
+            if (!FitsTime(workStart, Phase3Limits.TelegramProgressReserve))
+                return YieldRetry();
+
+            var live = await operations.GetAsync(ownerId, operationId, ct);
+            if (live is null || live.Status is OperationStatus.Deleted or OperationStatus.Failed)
+                return Stopped();
+
+            if (!await deliveries.RenewClaimAsync(ownerId, operationId, scheduledUtc, claimId, ct))
+                return ClaimWait();
+            ct.ThrowIfCancellationRequested();
+
+            TelegramPayload payload;
+            try
+            {
+                payload = ToPayload(leaf, source);
+            }
+            catch (Phase3ConsistencyException ex)
+            {
+                return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                    ex.Message, attempts, 0, ct);
+            }
+
+            long messageId;
+            try
+            {
+                attempts++;
+                messageId = await sender.SendPayloadAsync(live.ChatId, payload, ct);
+            }
+            catch (TelegramUnknownMethodException)
+            {
+                if (leaf.Kind == PlanLeafKind.LiteralPlain)
+                {
+                    return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                        "unknown_method", attempts, 1, ct);
+                }
+                var replaced = await ReplaceV3Async(ownerId, operationId, scheduledUtc, claimId,
+                    leaf.Id, PlanFallbackKind.ToPlain, attemptIndex, attempts, ct);
+                if (replaced.Failure is not null)
+                    return replaced.Failure;
+                if (replaced.Plan is null)
+                    return StorageRetry(attemptIndex, "plan replacement did not persist");
+                plan = replaced.Plan;
+                continue;
+            }
+            catch (TelegramSendException ex)
+            {
+                var classification = TelegramErrorClassifier.ClassifyException(ex);
+                switch (classification.Disposition)
+                {
+                    case TelegramDisposition.ContentRejection:
+                    {
+                        var fallback = DecideFallback(leaf, ex.Description);
+                        if (fallback is null)
+                        {
+                            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                                "content_rejected", attempts, 1, ct);
+                        }
+                        var replaced = await ReplaceV3Async(ownerId, operationId, scheduledUtc, claimId,
+                            leaf.Id, fallback.Value, attemptIndex, attempts, ct);
+                        if (replaced.Failure is not null)
+                            return replaced.Failure;
+                        if (replaced.Plan is null)
+                            return StorageRetry(attemptIndex, "plan replacement did not persist");
+                        plan = replaced.Plan;
+                        continue;
+                    }
+                    case TelegramDisposition.UnknownMethod:
+                    {
+                        if (leaf.Kind == PlanLeafKind.LiteralPlain)
+                        {
+                            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                                "unknown_method", attempts, 1, ct);
+                        }
+                        var replaced = await ReplaceV3Async(ownerId, operationId, scheduledUtc, claimId,
+                            leaf.Id, PlanFallbackKind.ToPlain, attemptIndex, attempts, ct);
+                        if (replaced.Failure is not null)
+                            return replaced.Failure;
+                        if (replaced.Plan is null)
+                            return StorageRetry(attemptIndex, "plan replacement did not persist");
+                        plan = replaced.Plan;
+                        continue;
+                    }
+                    case TelegramDisposition.PermanentRecipient:
+                    {
+                        var current = await operations.GetAsync(ownerId, operationId, ct);
+                        if (current is not null)
+                            await operations.CompareAndSwapStatusAsync(ownerId, operationId,
+                                current.Status, OperationStatus.Failed, "permanent recipient failure", ct);
+                        try
+                        {
+                            await occurrences!.FailAsync(new FailRequest(ownerId, operationId,
+                                scheduledUtc, claimId, "permanent recipient failure", 1), ct);
+                        }
+                        catch (Exception failEx) when (failEx is not OperationCanceledException) { }
+                        return new SingleAttemptResult(SingleAttemptOutcome.OperationFailed,
+                            attempts, null, "permanent recipient failure");
+                    }
+                    case TelegramDisposition.RateLimited:
+                    case TelegramDisposition.Transient:
+                    {
+                        var category = classification.Disposition == TelegramDisposition.RateLimited
+                            ? "rate_limited" : "transient_delivery_failure";
+                        int total;
+                        try
+                        {
+                            total = await occurrences!.TrackDeliveryAsync(
+                                new TrackDeliveryRequest(ownerId, operationId, scheduledUtc,
+                                    claimId, category), ct);
+                            attempts++;
+                        }
+                        catch (TransientStoreException storeEx)
+                        {
+                            return StorageRetry(attemptIndex, storeEx.Message);
+                        }
+                        catch (ClaimLostException) { return ClaimWait(); }
+                        catch (Phase3PayloadException payloadEx)
+                        {
+                            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                                payloadEx.Code, attempts, 0, ct);
+                        }
+                        if (total > DeliveryPolicy.MaxRetriesAfterInitial)
+                        {
+                            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                                category, attempts, 0, ct);
+                        }
+                        return new SingleAttemptResult(SingleAttemptOutcome.NeedRetry, attempts,
+                            DeliveryPolicy.RetryDelay(total - 1, ex.RetryAfter), category);
+                    }
+                    default:
+                    {
+                        var code = ex.ApiErrorCode == 401 || ex.HttpStatusCode == 401
+                            ? "telegram_unauthorized" : "delivery_rejected";
+                        return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                            code, attempts, 1, ct);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return ClaimWait();
+            }
+            catch (Exception)
+            {
+                int total;
+                try
+                {
+                    total = await occurrences!.TrackDeliveryAsync(
+                        new TrackDeliveryRequest(ownerId, operationId, scheduledUtc,
+                            claimId, "transient_delivery_failure"), ct);
+                    attempts++;
+                }
+                catch (TransientStoreException storeEx) { return StorageRetry(attemptIndex, storeEx.Message); }
+                catch (ClaimLostException) { return ClaimWait(); }
+                catch (Phase3PayloadException payloadEx)
+                {
+                    return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                        payloadEx.Code, attempts, 0, ct);
+                }
+                if (total > DeliveryPolicy.MaxRetriesAfterInitial)
+                {
+                    return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                        "transient_delivery_failure", attempts, 0, ct);
+                }
+                return new SingleAttemptResult(SingleAttemptOutcome.NeedRetry, attempts,
+                    DeliveryPolicy.RetryDelay(total - 1), "transient_delivery_failure");
+            }
+
+            try
+            {
+                plan = await occurrences!.ConfirmLeafAsync(new ConfirmLeafRequest(
+                    ownerId, operationId, scheduledUtc, claimId, leaf.Id, messageId), ct);
+            }
+            catch (TransientStoreException ex) { return StorageRetry(attemptIndex, ex.Message); }
+            catch (ClaimLostException) { return ClaimWait(); }
+            catch (Phase3ConsistencyException ex)
+            {
+                return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                    ex.Message, attempts, 0, ct);
+            }
+            catch (Phase3PayloadException ex)
+            {
+                return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                    ex.Code, attempts, 0, ct);
+            }
+        }
+
+        try
+        {
+            await occurrences!.CompleteAsync(
+                new CompleteRequest(ownerId, operationId, scheduledUtc, claimId), ct);
+            return new SingleAttemptResult(SingleAttemptOutcome.Sent, attempts, null, null);
+        }
+        catch (TransientStoreException ex) { return StorageRetry(attemptIndex, ex.Message); }
+        catch (ClaimLostException) { return ClaimWait(); }
+        catch (Phase3OperationStoppedException) { return Stopped(); }
+        catch (Phase3ConsistencyException ex)
+        {
+            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Message, attempts, 0, ct);
+        }
+        catch (Phase3PayloadException ex)
+        {
+            return await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Code, attempts, 0, ct);
+        }
+    }
+
+    // Replaces the rejected unsent leaf and persists the replacement before
+    // any new send. Storage conflicts surface as a retryable failure; claim
+    // loss propagates to the activity's claim handling.
+    private async Task<(DeliveryPlanDoc? Plan, SingleAttemptResult? Failure)> ReplaceV3Async(
+        string ownerId, string operationId, DateTime scheduledUtc, string claimId,
+        string leafId, PlanFallbackKind fallback, int attemptIndex, int attempts, CancellationToken ct)
+    {
+        try
+        {
+            var replaced = await occurrences!.ReplaceLeafAsync(new ReplaceLeafRequest(
+                ownerId, operationId, scheduledUtc, claimId, leafId, fallback), ct);
+            return (replaced.Plan, null);
+        }
+        catch (TransientStoreException ex) { return (null, StorageRetry(attemptIndex, ex.Message)); }
+        catch (Phase3ConsistencyException ex)
+        {
+            return (null, await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Message, attempts, 0, ct));
+        }
+        catch (Phase3PayloadException ex)
+        {
+            return (null, await FailV3Async(ownerId, operationId, scheduledUtc, claimId,
+                ex.Code, attempts, 0, ct));
+        }
+    }
+
+    private static PlanFallbackKind? DecideFallback(PlanLeaf leaf, string description) =>
+        (leaf.Kind, leaf.FallbackStage) switch
+        {
+            (PlanLeafKind.Markdown, PlanFallbackStage.Native) => PlanFallbackKind.ToLiteralRich,
+            (PlanLeafKind.LiteralRich, PlanFallbackStage.RichFull) =>
+                TelegramErrorClassifier.IsSizeRejection(description)
+                    ? PlanFallbackKind.ToSmallLiteral
+                    : PlanFallbackKind.ToPlain,
+            (PlanLeafKind.LiteralRich, PlanFallbackStage.RichSmall) => PlanFallbackKind.ToPlain,
+            _ => null,
+        };
+
+    private static TelegramPayload ToPayload(PlanLeaf leaf, string source)
+    {
+        if (leaf.StartUtf16 < 0 || leaf.LengthUtf16 <= 0 ||
+            leaf.StartUtf16 + leaf.LengthUtf16 > source.Length)
+            throw new Phase3ConsistencyException("plan leaf range is out of bounds");
+        var text = source.Substring(leaf.StartUtf16, leaf.LengthUtf16);
+        return leaf.Kind switch
+        {
+            PlanLeafKind.Markdown => new TelegramPayload(TelegramPayloadKind.Markdown, text),
+            PlanLeafKind.LiteralRich => new TelegramPayload(TelegramPayloadKind.LiteralRich, text),
+            PlanLeafKind.LiteralPlain => new TelegramPayload(TelegramPayloadKind.LiteralPlain, text),
+            _ => throw new Phase3ConsistencyException($"unexpected leaf kind {leaf.Kind}"),
+        };
+    }
+
     private async Task<SingleAttemptResult> CapAttemptAsync(SingleAttemptResult result,
         DeliveryReceipt owned, int attemptIndex, CancellationToken ct)
     {
@@ -511,6 +1272,12 @@ public sealed class DeliveryHandler(
     private static bool HasPersistedPayload(DeliveryReceipt receipt) =>
         receipt.TotalParts > 0 &&
         (receipt.ExecutionStatus == "generated" || receipt.ExecutionStatus == "failed");
+
+    private sealed class SystemClock : IPhase3Clock
+    {
+        public static readonly SystemClock Instance = new();
+        public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
+    }
 
     private string TruncateAnswer(string answer)
     {

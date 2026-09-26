@@ -13,6 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.Data.Tables" Version="12.12.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.52.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.DurableTask" Version="1.19.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -25,6 +29,11 @@
     <Compile Include="..\..\src\RecurringTasksBot\TelegramBotSender.cs" Link="App\TelegramBotSender.cs" />
     <Compile Include="..\..\src\RecurringTasksBot\TelegramUpdateParser.cs" Link="App\TelegramUpdateParser.cs" />
     <Compile Include="..\..\src\RecurringTasksBot\BotOptions.cs" Link="App\BotOptions.cs" />
+    <!-- Exercise the real Table transaction/serialization members with real SDK entity types. -->
+    <Compile Include="..\..\src\RecurringTasksBot\TableStores.cs" Link="App\TableStores.cs" />
+    <Compile Include="..\..\src\RecurringTasksBot\TableOccurrenceRepository.cs" Link="App\TableOccurrenceRepository.cs" />
+    <!-- Exercise the real activity entry point including post-handler receipt read/logging. -->
+    <Compile Include="..\..\src\RecurringTasksBot\RecurrenceFunctions.cs" Link="App\RecurrenceFunctions.cs" />
   </ItemGroup>
 
 </Project>

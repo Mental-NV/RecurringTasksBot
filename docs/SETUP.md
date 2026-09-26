@@ -149,7 +149,15 @@ Recovery uses storage credentials only. `recover` reclaims stranded
 `starting` operations; `restart` tombstones a `failed` operation (after
 its cause is resolved) so the original `/create` can safely reschedule.
 Cleanup is dry-run by default; `update_` receipts inside the dedup window
-are always kept.
+are always kept. Receipt cleanup is occurrence-aware: rows are grouped by
+owner/operation/occurrence and the parent receipt is inspected, so only
+terminal (`sent`/`failed`) occurrences older than the cutoff lose their
+receipt and child artifacts (children deleted before the parent receipt).
+Unfinished occurrences are preserved regardless of age, as are `memory_`
+rows. Orphan artifacts (no parent receipt and no live operation) are
+deleted only after a 24-hour grace period. Deleted-operation cleanup
+removes memory and artifacts first and the operation row last, rechecking
+the tombstone before destructive batches so interrupted runs retry safely.
 
 ## Retention defaults
 
@@ -188,7 +196,12 @@ export RecurringTasksBot__AzureWebJobsStorage="<dev-connection-string>"
 Non-secret LLM settings live under `RecurringTasksBot:Llm` in
 `appsettings.json` (provider, model, maximum reasoning effort, 480s
 request timeout, 131,072-token completion budget, 2 generation retries,
-search limits). The host loads `appsettings.json`, then the
+search limits). Phase 3 adds `Memory:Mode` (`PreviousSuccessfulReply`
+or `None`) and, under `RecurringTasksBot:Llm`, `TargetAnswerTextChars`
+(24,000), `MaxAnswerSourceChars` (131,072), `DeclaredContextTokens`
+(1,048,576), `SearchContextReserveTokens` (65,536), and
+`ContextEnvelopeReserveTokens` (8,192). The host loads
+`appsettings.json`, then the
 environment profile (`appsettings.Development.json` locally,
 `appsettings.Production.json` in Azure), then environment variables —
 so editing and redeploying the JSON changes behavior. Bicep sets only
@@ -197,6 +210,12 @@ any manually configured `RecurringTasksBot__Llm__*` overrides (except
 `ApiKey`) if you want the published profiles to control those values. The Functions
 timeout (`host.json`, 10 minutes on Consumption) exceeds one 480s
 generation attempt plus persistence.
+
+`Llm:MaxStoredAnswerChars` was removed from shipped configuration: new
+answers are never substring-truncated (an oversized answer fails visibly
+instead). An old environment override for it is deprecated and ignored;
+startup logs a value-free deprecation notice when one is detected. Unknown
+`Memory:Mode` values fail startup.
 
 The shared search budget is 8 calls per generation attempt, with up to 5
 results per call and 40 results total. `MaxSearches` controls both the tool's
@@ -220,13 +239,16 @@ also classified as failures. Maximum reasoning remains enabled.
 
 Prompts and answers accept up to 32,768 characters (Unicode scalar
 count, not bytes or UTF-16 units). Reply to a long message with
-`/create <schedule>` to use it as the prompt. Answers are split into
-32,768-character rich messages only when Telegram's limits require it;
-over-long answers are visibly marked as truncated. Long prompts/answers
-are segmented across bounded table entities and reassembled on read;
-generated content follows the existing receipt retention policy
-(`delivery_*` rows include answer chunks). Formatting is split at rendered
-character boundaries without dropping answer text, tags, or link targets.
+`/create <schedule>` to use it as the prompt. New (schema 3) answers are
+delivered natively: AI heading/list/table/code/link/math/details fixtures
+arrive unchanged in `rich_message.markdown`, without wrappers or appended
+sources. An oversized answer fails visibly without truncation. Long
+prompts/answers are segmented across bounded table entities (16,000
+scalars per property) and reassembled on read with hash verification;
+generated content follows the receipt retention policy. Legacy HTML
+receipts keep their original transport, IDs, and progress; only a
+definitely rejected, unsent legacy part is converted to literal text, and
+legacy deliveries never publish Phase 3 memory.
 
 Each executing activity owns a unique, conditional Table lease, renewed
 every minute and released when the attempt finishes. A crashed worker’s
@@ -257,6 +279,37 @@ not rerun, orchestration activity names and state shapes are unchanged
 safely. On terminal generation failure the bot sends a short notice
 identifying the operation and occurrence; future runs stay scheduled,
 and provider errors or credentials are never exposed.
+
+Deploy Phase 3 as a coordinated worker upgrade: drain/stop old workers
+before new workers can write schema 3. Old binaries do not understand
+new plans, so ordinary binary rollback after schema-3 writes is unsafe;
+rollback must pause affected work and use a compatibility-capable build.
+
+### Phase 3: recurring execution
+
+Each occurrence runs one ritual in order inside the existing activities:
+initialize the frozen context (effective system instruction plus, when
+enabled, the one archived previous successful reply), generate the answer
+with a single one-request LLM call, persist the answer and its delivery
+plan atomically, execute the plan leaf by leaf over the typed Telegram
+sender (structured rejections drive deterministic fallbacks: Markdown
+rejection to literal rich, literal-size rejection to conservative chunks,
+unavailable method to plain), then publish completion and record the new
+previous reply. Generation retries (2) stay separate from delivery
+retries; long waits persist as Durable timers and the activity yields
+before the work budget expires.
+
+Content is segmented at every layer: plan leaves (at most 128), OpenRouter
+context messages, and table properties/entities/transactions, so
+worst-case Unicode fits storage limits. Memory rows persist while their
+operation exists, including failed runs, and are removed only with
+deleted-operation cleanup — never by receipt retention or age. Every
+reply build emits a content-free canary log (`replySource=llm-authored`,
+`literal`, or `failure-notice-literal` with provider, model, and receipt
+schema) so the dashboard can answer whether delivered text was
+LLM-authored or a literal fallback. Health and configuration failures
+remain visible through existing logs; captured logs never contain
+prompts, answers, history, provider bodies, or tokens.
 
 ### Development smoke test
 

@@ -60,7 +60,17 @@ public sealed record DeliveryReceipt(
     // Each activity invocation owns a unique lease; retry indices are not
     // ownership tokens. Null means the prior worker explicitly released it.
     string? ClaimId = null,
-    string? PayloadVersion = null);
+    string? PayloadVersion = null,
+    // Phase 3 publication pointers. All nullable so old receipts decode
+    // safely; the plan-derived SentParts/MessageIds stay the summary.
+    int? PayloadSchemaVersion = null,
+    string? ContextVersion = null,
+    bool ContextInitialized = false,
+    string? AnswerVersion = null,
+    string? PlanVersion = null,
+    string? InstructionVersion = null,
+    int DeliveryTransientFailures = 0,
+    int StorageConflicts = 0);
 
 public static class UpdateReceipts
 {

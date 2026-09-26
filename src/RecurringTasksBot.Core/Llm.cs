@@ -71,6 +71,15 @@ public interface ILlmPromptExecutor
     Task<LlmResult> ExecuteAsync(LlmPrompt prompt, CancellationToken ct = default);
 }
 
+// Phase 3 prompt executor: frozen instruction plus an optional archived
+// assistant turn and the current envelope. Enforces the answer source bound
+// while accumulating streamed content and on the final response.
+public interface IPhase3LlmExecutor
+{
+    Task<LlmResult> ExecuteMessagesAsync(
+        IReadOnlyList<ChatMessage> messages, int maxSourceScalars, CancellationToken ct = default);
+}
+
 // Configuration binding shared by the host and tests: JSON profiles
 // (common + environment-specific, environment variables applied over them)
 // feed one lookup; code defaults apply only when neither defines a value.
@@ -112,6 +121,11 @@ public enum LlmFailureKind
     Transient,
     Permanent,
     EmptyResponse,
+    // Phase 3 terminal generation failures: never retried, never delivered
+    // partially. The exception summary carries the sanitized occurrence code
+    // (answer_incomplete, answer_source_limit).
+    AnswerIncomplete,
+    SourceLimit,
 }
 
 public sealed class LlmExecutionException(
@@ -129,7 +143,8 @@ public static class GenerationPolicy
     public const int MaxRetriesAfterInitial = 2;
 
     public static bool ShouldRetry(LlmFailureKind kind, int attemptsSoFar) =>
-        kind != LlmFailureKind.Permanent && attemptsSoFar <= MaxRetriesAfterInitial;
+        kind is LlmFailureKind.Transient or LlmFailureKind.EmptyResponse &&
+        attemptsSoFar <= MaxRetriesAfterInitial;
 
     // Increasing Durable waits; honors Retry-After when it exceeds backoff.
     public static TimeSpan RetryDelay(int retryIndex, TimeSpan? retryAfter = null)

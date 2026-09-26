@@ -26,7 +26,7 @@ namespace RecurringTasksBot.Core;
 public sealed partial class OpenRouterLlmExecutor(
     HttpClient http,
     LlmOptions options,
-    string apiKey) : ILlmPromptExecutor
+    string apiKey) : ILlmPromptExecutor, IPhase3LlmExecutor
 {
     public const string ServerToolType = "openrouter:web_search";
     public const string SearchEngineExa = "exa";

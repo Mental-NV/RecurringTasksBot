@@ -64,6 +64,14 @@ public interface ITelegramSender
     // and mocks keep working; the production sender uses sendRichMessage.
     Task<long> SendRichTextAsync(long chatId, string part, CancellationToken ct = default) =>
         SendTextAsync(chatId, part, ct);
+
+    // Typed one-request send: exactly one message per call. The default
+    // adapter preserves kind only for plain text so existing fakes keep
+    // working; the production sender serializes each payload kind.
+    Task<long> SendPayloadAsync(long chatId, TelegramPayload payload, CancellationToken ct = default) =>
+        payload.Kind == TelegramPayloadKind.LiteralPlain
+            ? SendTextAsync(chatId, payload.Content, ct)
+            : SendRichTextAsync(chatId, payload.Content, ct);
 }
 
 public interface IOrchestrationClient

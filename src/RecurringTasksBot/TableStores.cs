@@ -468,7 +468,7 @@ public sealed class TableDeliveryReceiptStore(TableClients clients)
         throw new TransientStoreException("Occurrence changed repeatedly during lease update.");
     }
 
-    private static TableEntity ToEntity(DeliveryReceipt receipt)
+    public static TableEntity ToEntity(DeliveryReceipt receipt)
     {
         var entity = new TableEntity(
             receipt.OwnerId,
@@ -493,13 +493,26 @@ public sealed class TableDeliveryReceiptStore(TableClients clients)
             ["UpdatedUtc"] = receipt.UpdatedUtc == default ? DateTimeOffset.UtcNow : receipt.UpdatedUtc,
             ["ClaimId"] = receipt.ClaimId ?? string.Empty,
             ["PayloadVersion"] = receipt.PayloadVersion ?? string.Empty,
+            ["ContextInitialized"] = receipt.ContextInitialized,
+            ["DeliveryTransientFailures"] = receipt.DeliveryTransientFailures,
+            ["StorageConflicts"] = receipt.StorageConflicts,
         };
         if (receipt.TelegramMessageId.HasValue)
             entity["TelegramMessageId"] = receipt.TelegramMessageId.Value;
+        if (receipt.PayloadSchemaVersion.HasValue)
+            entity["PayloadSchemaVersion"] = receipt.PayloadSchemaVersion.Value;
+        if (receipt.ContextVersion is not null)
+            entity["ContextVersion"] = receipt.ContextVersion;
+        if (receipt.AnswerVersion is not null)
+            entity["AnswerVersion"] = receipt.AnswerVersion;
+        if (receipt.PlanVersion is not null)
+            entity["PlanVersion"] = receipt.PlanVersion;
+        if (receipt.InstructionVersion is not null)
+            entity["InstructionVersion"] = receipt.InstructionVersion;
         return entity;
     }
 
-    private static DeliveryReceipt ToReceipt(
+    public static DeliveryReceipt ToReceipt(
         string ownerId, string operationId, DateTime scheduledUtc, TableEntity e)
     {
         int Int(string name, int missing = 0) =>
@@ -508,6 +521,12 @@ public sealed class TableDeliveryReceiptStore(TableClients clients)
             e.TryGetValue(name, out var v) ? Convert.ToInt64(v ?? 0) : 0;
         string? Str(string name) =>
             string.IsNullOrEmpty((string?)e[name]) ? null : (string?)e[name];
+        // New Phase 3 fields decode safely for old receipts: TryGetValue
+        // keeps missing properties at their defaults.
+        string? OptStr(string name) =>
+            e.TryGetValue(name, out var v) && !string.IsNullOrEmpty((string?)v) ? (string?)v : null;
+        int? OptInt(string name) =>
+            e.TryGetValue(name, out var v) && v is not null ? Convert.ToInt32(v) : null;
         return new DeliveryReceipt(
             ownerId, operationId, scheduledUtc,
             (string?)e["Status"] ?? string.Empty,
@@ -529,7 +548,15 @@ public sealed class TableDeliveryReceiptStore(TableClients clients)
             e.TryGetValue("UpdatedUtc", out var updated) && updated is DateTimeOffset u
                 ? u : DateTimeOffset.UtcNow,
             // Pre-upgrade rows have no lease or payload version.
-            Str("ClaimId"), Str("PayloadVersion"));
+            Str("ClaimId"), Str("PayloadVersion"),
+            OptInt("PayloadSchemaVersion"),
+            OptStr("ContextVersion"),
+            e.TryGetValue("ContextInitialized", out var ci) && ci is true,
+            OptStr("AnswerVersion"),
+            OptStr("PlanVersion"),
+            OptStr("InstructionVersion"),
+            Int("DeliveryTransientFailures"),
+            Int("StorageConflicts"));
     }
 }
 

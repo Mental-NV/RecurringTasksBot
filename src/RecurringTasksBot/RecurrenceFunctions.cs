@@ -30,7 +30,11 @@ public sealed class RecurrenceFunctions(
     IOccurrencePayloadStore payloads,
     ITelegramSender sender,
     ILlmPromptExecutor llm,
-    LlmOptions llmOptions)
+    LlmOptions llmOptions,
+    IOccurrenceRepository? occurrences = null,
+    Phase3Options? phase3Options = null,
+    IPhase3LlmExecutor? phase3Llm = null,
+    IPhase3Clock? clock = null)
 {
     [Function("RecurrenceOrchestrator")]
     public async Task Run(
@@ -117,7 +121,9 @@ public sealed class RecurrenceFunctions(
             "Occurrence attempt {OperationId} {ScheduledUtc:u} #{AttemptIndex} started.",
             request.OperationId, scheduled, request.AttemptIndex);
 
-        var handler = new DeliveryHandler(operations, deliveries, payloads, sender, llm, llmOptions);
+        var handler = new DeliveryHandler(operations, deliveries, payloads, sender, llm, llmOptions,
+            occurrences: occurrences, phase3Options: phase3Options, phase3Llm: phase3Llm, clock: clock,
+            logger: logger);
         var result = await handler.AttemptOnceAsync(
             request.OwnerId, request.OperationId, scheduled, request.AttemptIndex,
             context.CancellationToken);
@@ -139,6 +145,18 @@ public sealed class RecurrenceFunctions(
         if (receipt?.ExecutionStatus is "generating" or "failed" && receipt.ErrorSummary is { Length: > 0 })
             logger.LogWarning("LLM attempt {OperationId} {ScheduledUtc:u} generation #{GenerationAttempts}: {FailureSummary}",
                 request.OperationId, scheduled, receipt.GenerationAttempts, receipt.ErrorSummary);
+        // Content-free Phase 3 telemetry: versions, plan progress, and
+        // separate retry counters. Never prompts, answers, or payloads.
+        if (receipt?.PayloadSchemaVersion == 3)
+            logger.LogInformation(
+                "Occurrence v3 {OperationId} {ScheduledUtc:u} {Outcome} answer {AnswerVersion} " +
+                "plan {PlanVersion} parts {SentParts}/{TotalParts} instruction {InstructionVersion} " +
+                "deliveryFailures {DeliveryFailures} storageConflicts {StorageConflicts}.",
+                request.OperationId, scheduled, result.Outcome,
+                receipt.AnswerVersion ?? "none", receipt.PlanVersion ?? "none",
+                receipt.SentParts, receipt.TotalParts,
+                receipt.InstructionVersion ?? "none",
+                receipt.DeliveryTransientFailures, receipt.StorageConflicts);
         return result;
     }
 }
