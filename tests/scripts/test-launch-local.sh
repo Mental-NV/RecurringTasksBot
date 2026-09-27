@@ -40,6 +40,6 @@ EOF
 chmod +x "$SHIM/func"
 PATH="$SHIM:/usr/bin:/bin" bash scripts/launch-local.sh >"$SHIM/out2.txt" 2>&1 \
   || { echo "FAIL: unexpected non-zero exit with func present"; cat "$SHIM/out2.txt"; exit 1; }
-grep -q "FUNC_INVOKED start --dotnet-isolated IN .*/src/RecurringTasksBot" "$SHIM/out2.txt" \
-  || { echo "FAIL: func start --dotnet-isolated not run from src/RecurringTasksBot"; cat "$SHIM/out2.txt"; exit 1; }
+grep -q "FUNC_INVOKED start --dotnet-isolated IN .*/src/RecurringTasksBot.FunctionApp" "$SHIM/out2.txt" \
+  || { echo "FAIL: func start --dotnet-isolated not run from src/RecurringTasksBot.FunctionApp"; cat "$SHIM/out2.txt"; exit 1; }
 echo "PASS: present func reaches func start --dotnet-isolated from the app directory"

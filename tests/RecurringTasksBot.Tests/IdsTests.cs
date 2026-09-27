@@ -1,4 +1,5 @@
-using RecurringTasksBot.Core;
+using RecurringTasksBot.Application;
+using RecurringTasksBot.Infrastructure.Persistence;
 
 namespace RecurringTasksBot.Tests;
 
@@ -41,9 +42,9 @@ public sealed class IdsTests
     [Fact]
     public void RowKeys_FollowSpecPatterns()
     {
-        Assert.StartsWith("operation_", Ids.OperationRowKey("abc"));
-        Assert.StartsWith("update_", Ids.UpdateReceiptRowKey(7));
-        Assert.StartsWith("delivery_op_", Ids.DeliveryReceiptRowKey("op",
+        Assert.StartsWith("operation_", TableRowKeys.Operation("abc"));
+        Assert.StartsWith("update_", TableRowKeys.UpdateReceipt(7));
+        Assert.StartsWith("delivery_op_", TableRowKeys.DeliveryReceipt("op",
             new DateTime(2026, 1, 5, 9, 0, 0, DateTimeKind.Utc)));
     }
 }

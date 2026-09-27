@@ -16,4 +16,6 @@ jobs:
       - name: Unit tests
         run: dotnet test --configuration Release --no-build
       - name: Script tests (no secrets)
-        run: bash tests/scripts/test-launch-local.sh
+        run: |
+          bash tests/scripts/test-launch-local.sh
+          bash tests/scripts/test-deploy-config.sh

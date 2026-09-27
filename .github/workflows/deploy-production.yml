@@ -1,47 +1,102 @@
 name: Deploy production
 
+# Explicit operator invocation only. A push must never deploy.
 on:
-  push:
-    branches: [master]
+  workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  deploy:
+  gates:
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Build and publish
+      - name: Offline validation (build + tests)
         run: |
-          dotnet publish src/RecurringTasksBot/RecurringTasksBot.csproj \
+          dotnet restore RecurringTasksBot.sln
+          dotnet build RecurringTasksBot.sln --configuration Release --no-restore
+          dotnet test RecurringTasksBot.sln --configuration Release --no-build
+      - name: Script checks (no secrets)
+        run: |
+          bash tests/scripts/test-launch-local.sh
+          bash tests/scripts/test-deploy-config.sh
+      - name: Publish and zip package
+        run: |
+          dotnet publish src/RecurringTasksBot.FunctionApp/RecurringTasksBot.FunctionApp.csproj \
             --configuration Release --output ./publish
+          # Zip first: upload-artifact excludes hidden directories such as
+          # .azurefunctions, whose assemblies the generated extension
+          # metadata references.
+          cd publish && zip -r ../app.zip . && cd ..
+      - uses: actions/upload-artifact@v4
+        with:
+          name: functionapp-package
+          path: ./app.zip
+
+  deploy:
+    needs: gates
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: functionapp-package
+          path: .
+      - name: Check required variables
+        run: |
+          missing=""
+          for v in AZURE_RESOURCE_GROUP FUNCTION_APP_NAME PRODUCTION_WEBHOOK_URL; do
+            if [ -z "${!v:-}" ]; then missing="$missing $v"; fi
+          done
+          [ -n "$missing" ] && { echo "Missing required variables:$missing" >&2; exit 1; }
+          echo "Target: $FUNCTION_APP_NAME in $AZURE_RESOURCE_GROUP ($PRODUCTION_WEBHOOK_URL)."
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          FUNCTION_APP_NAME: ${{ vars.FUNCTION_APP_NAME }}
+          PRODUCTION_WEBHOOK_URL: ${{ vars.PRODUCTION_WEBHOOK_URL }}
+      - name: Inventory intended deployment (no credentials)
+        run: |
+          python3 - infra/main.parameters.json <<'EOF'
+          import json, sys
+          params = json.load(open(sys.argv[1]))["parameters"]
+          for name in ["location", "functionAppName", "planName",
+                       "storageAccountName", "taskHubName", "tableName",
+                       "expectedBotId", "webhookUrl"]:
+              value = params[name]["value"]
+              print(f"{name}: {'<supplied at deploy time>' if value.startswith('__') else value}")
+          EOF
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Resolve deployment parameters
+        run: |
+          bash scripts/resolve-deploy-parameters.sh --out "$RUNNER_TEMP/deploy-parameters.json"
+          echo "RESOLVED_PARAMS=$RUNNER_TEMP/deploy-parameters.json" >> "$GITHUB_ENV"
+        env:
+          FUNCTION_APP_NAME: ${{ vars.FUNCTION_APP_NAME }}
+          PRODUCTION_WEBHOOK_URL: ${{ vars.PRODUCTION_WEBHOOK_URL }}
+          DEPLOY_STORAGE_CONNECTION_STRING: ${{ secrets.RecurringTasksBot__AzureWebJobsStorage }}
+          DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.RecurringTasksBot__Telegram__BotToken }}
+          DEPLOY_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
+          DEPLOY_LLM_API_KEY: ${{ secrets.RecurringTasksBot__Llm__ApiKey }}
       - name: Deploy infrastructure (existing storage account)
         uses: azure/arm-deploy@v2
         with:
           scope: resourcegroup
           resourceGroupName: ${{ vars.AZURE_RESOURCE_GROUP }}
           template: infra/main.bicep
-          parameters: >
-            infra/main.parameters.json
-            storageConnectionString=${{ secrets.RecurringTasksBot__AzureWebJobsStorage }}
-            telegramBotToken=${{ secrets.RecurringTasksBot__Telegram__BotToken }}
-            telegramWebhookSecret=${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
-            llmApiKey=${{ secrets.RecurringTasksBot__Llm__ApiKey }}
+          parameters: ${{ env.RESOLVED_PARAMS }}
       - name: Deploy app package
         run: |
-          cd publish && zip -r ../app.zip . && cd ..
           az functionapp deployment source config-zip \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --name "${{ vars.FUNCTION_APP_NAME }}" \
@@ -50,10 +105,20 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.RecurringTasksBot__Telegram__BotToken }}
           WEBHOOK_SECRET: ${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
-          WEBHOOK_URL: ${{ vars.PRODUCTION_WEBHOOK_URL }}
         run: |
           response=$(curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
-            --data-urlencode "url=${WEBHOOK_URL}" \
+            --data-urlencode "url=${{ vars.PRODUCTION_WEBHOOK_URL }}" \
             --data-urlencode "secret_token=${WEBHOOK_SECRET}" \
             --data-urlencode "allowed_updates=[\"message\"]")
           echo "$response" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('ok', False) else 1)"
+      - name: Verify host and platform hub
+        run: |
+          state=$(az functionapp show --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.FUNCTION_APP_NAME }}" --query state -o tsv)
+          [ "$state" = "Running" ] || { echo "Function app state: $state" >&2; exit 1; }
+          expected=$(python3 -c "import json; print(json.load(open('infra/main.parameters.json'))['parameters']['taskHubName']['value'])")
+          hub=$(az functionapp config appsettings list --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.FUNCTION_APP_NAME }}" \
+            --query "[?name=='AzureFunctionsJobHost__extensions__durableTask__hubName'].value | [0]" -o tsv)
+          [ "$hub" = "$expected" ] || { echo "Platform hub '$hub' != '$expected'" >&2; exit 1; }
+          echo "Host running with hub $hub."

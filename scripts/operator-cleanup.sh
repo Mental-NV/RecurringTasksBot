@@ -11,13 +11,18 @@
 #                                   and artifacts (operation row removed last)
 #   --purge-orchestration-history-days N terminal orchestration Instances+History
 #   --keep-dedup-days M (default 7) never delete update_ receipts newer than M days
-#   --table NAME (default RecurringTasks) --hub NAME (default RecurringTasksProd)
+#   --env dev|prod to resolve the business table and task hub from the
+#     selected FunctionApp runtime profile; --table/--hub override one piece
 #
 # Env: AZURE_STORAGE_CONNECTION_STRING (presence only, never printed)
 set -euo pipefail
 
-TABLE="RecurringTasks"
-HUB="RecurringTasksProd"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$REPO_ROOT/src/RecurringTasksBot.FunctionApp"
+
+TABLE=""
+HUB=""
+ENV_NAME=""
 RECEIPTS_DAYS=0
 DELETED_OPS_DAYS=0
 HISTORY_DAYS=0
@@ -30,6 +35,7 @@ while [ $# -gt 0 ]; do
     --deleted-ops-older-than-days) DELETED_OPS_DAYS="${2:-}"; shift 2 ;;
     --purge-orchestration-history-days) HISTORY_DAYS="${2:-}"; shift 2 ;;
     --keep-dedup-days) KEEP_DEDUP_DAYS="${2:-}"; shift 2 ;;
+    --env) ENV_NAME="${2:-}"; shift 2 ;;
     --table) TABLE="${2:-}"; shift 2 ;;
     --hub) HUB="${2:-}"; shift 2 ;;
     --apply) APPLY=1; shift ;;
@@ -37,7 +43,48 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Development names come from the dev runtime profile; production names
+# come from the canonical deployment parameter template.
+TEMPLATE="$REPO_ROOT/infra/main.parameters.json"
+if [ -n "$ENV_NAME" ]; then
+  case "$ENV_NAME" in
+    dev)
+      [ -z "$TABLE" ] && TABLE=$(python3 -c "import json; print(json.load(open('$APP_DIR/appsettings.json'))['RecurringTasksBot']['TableName'])")
+      [ -z "$HUB" ] && HUB=$(python3 -c "import json; print(json.load(open('$APP_DIR/appsettings.Development.json'))['RecurringTasksBot']['TaskHubName'])")
+      ;;
+    prod)
+      [ -z "$TABLE" ] && TABLE=$(python3 -c "import json; print(json.load(open('$TEMPLATE'))['parameters']['tableName']['value'])")
+      [ -z "$HUB" ] && HUB=$(python3 -c "import json; print(json.load(open('$TEMPLATE'))['parameters']['taskHubName']['value'])")
+      ;;
+    *) echo "Unknown --env '$ENV_NAME' (expected dev|prod)" >&2; exit 2 ;;
+  esac
+fi
+[ -z "$TABLE" ] && TABLE="RecurringTaskData"
+if [ "$HISTORY_DAYS" -gt 0 ] && [ -z "$HUB" ]; then
+  echo "History purge needs a task hub: pass --env dev|prod or --hub NAME." >&2
+  exit 2
+fi
+echo "Target table: $TABLE${HUB:+; hub: $HUB}${ENV_NAME:+ (env $ENV_NAME)}"
+
 if [ -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then echo "Missing AZURE_STORAGE_CONNECTION_STRING" >&2; exit 1; fi
+
+if [ -n "$ENV_NAME" ]; then
+  if [ "$ENV_NAME" = "prod" ]; then
+    EXPECTED_ACCOUNT=$(python3 -c "import json; print(json.load(open('$TEMPLATE'))['parameters']['storageAccountName']['value'])")
+  else
+    EXPECTED_ACCOUNT=$(python3 -c "import json; print(json.load(open('$REPO_ROOT/infra/environments/development.json'))['azure']['storageAccountName'])")
+  fi
+  ACTUAL_ACCOUNT=$(python3 -c "
+cs = '''$AZURE_STORAGE_CONNECTION_STRING'''.replace(chr(10), '')
+for part in cs.split(';'):
+    if part.startswith('AccountName='):
+        print(part.split('=', 1)[1]); break
+")
+  if [ "$EXPECTED_ACCOUNT" != "$ACTUAL_ACCOUNT" ]; then
+    echo "Storage account mismatch: --env $ENV_NAME expects '$EXPECTED_ACCOUNT' but credentials name '$ACTUAL_ACCOUNT'. Refusing to run." >&2
+    exit 1
+  fi
+fi
 export AZURE_STORAGE_CONNECTION_STRING
 
 cutoff_days() {
@@ -174,7 +221,7 @@ tombs = query(f"Status eq 'deleted' and Timestamp lt datetime'{cutoff}' and "
     "(RowKey ge 'operation_' and RowKey lt 'operation`')")
 for t in sorted(tombs, key=lambda x: (x["PartitionKey"], x["RowKey"])):
     pk, op_row = t["PartitionKey"], t["RowKey"]
-    if not op_row.startswith("operation_") or "__" in op_row:
+    if not op_row.startswith("operation_"):
         continue
     op_id = op_row[len("operation_"):]
     # Recheck the tombstone before destructive batches (retry/interruption safe).
@@ -184,15 +231,14 @@ for t in sorted(tombs, key=lambda x: (x["PartitionKey"], x["RowKey"])):
         continue
     owned = query(f"PartitionKey eq '{pk}' and RowKey ge 'delivery_{op_id}_' "
         f"and RowKey lt 'delivery_{op_id}_`'", select="PartitionKey,RowKey")
-    texts = query(f"PartitionKey eq '{pk}' and RowKey ge 'operation_{op_id}__' "
-        f"and RowKey lt 'operation_{op_id}_`'", select="PartitionKey,RowKey")
     mem = query(f"PartitionKey eq '{pk}' and RowKey eq 'memory_{op_id}'",
         select="PartitionKey,RowKey")
-    # Memory and artifacts first, the operation row last.
+    # Memory and artifacts first, the operation row last. The operation
+    # prompt lives on the operation entity itself; there are no separate
+    # operation text child rows.
     ordered = ([r["RowKey"] for r in mem] +
         sorted(r["RowKey"] for r in owned if "__" in r["RowKey"]) +
-        sorted(r["RowKey"] for r in owned if "__" not in r["RowKey"]) +
-        sorted(r["RowKey"] for r in texts) + [op_row])
+        sorted(r["RowKey"] for r in owned if "__" not in r["RowKey"]) + [op_row])
     if apply:
         for rk in ordered:
             delete(pk, rk)

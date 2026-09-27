@@ -7,6 +7,9 @@
 # Lower --timeout (e.g. 20) when a VPN or middlebox resets long-held connections.
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$REPO_ROOT/src/RecurringTasksBot.FunctionApp"
+
 DROP_PENDING="false"
 PORT="7071"
 TIMEOUT="50"
@@ -24,10 +27,10 @@ for v in RecurringTasksBot__Telegram__BotToken RecurringTasksBot__Telegram__Webh
   if [ -z "${!v:-}" ]; then echo "Missing required env var: $v" >&2; exit 1; fi
 done
 
-DEV_PROFILE="appsettings.Development.json"
-PROD_PROFILE="appsettings.Production.json"
+DEV_PROFILE="$APP_DIR/appsettings.Development.json"
+PARAMS_TEMPLATE="$REPO_ROOT/infra/main.parameters.json"
 EXPECTED_DEV_ID=$(python3 -c "import json; print(json.load(open('$DEV_PROFILE'))['RecurringTasksBot']['ExpectedBotId'])")
-PROD_BOT_ID=$(python3 -c "import json; print(json.load(open('$PROD_PROFILE'))['RecurringTasksBot']['ExpectedBotId'])")
+PROD_BOT_ID=$(python3 -c "import json; print(json.load(open('$PARAMS_TEMPLATE'))['parameters']['expectedBotId']['value'])")
 API_BASE="${TELEGRAM_API_BASE:-https://api.telegram.org}"
 ACTUAL_BOT_ID=$(curl -sS "${API_BASE}/bot${RecurringTasksBot__Telegram__BotToken}/getMe" | python3 -c "import json,sys; print(json.load(sys.stdin).get('result', {}).get('id', ''))")
 

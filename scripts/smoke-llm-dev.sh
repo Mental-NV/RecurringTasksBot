@@ -10,4 +10,14 @@ if [ -z "${RecurringTasksBot__Llm__ApiKey:-}" ]; then
   echo "Missing required env var: RecurringTasksBot__Llm__ApiKey" >&2
   exit 1
 fi
-exec dotnet run --project tools/LlmSmoke/LlmSmoke.csproj --configuration Release
+export FUNCTIONAPP_CONFIG_DIR="$PWD/src/RecurringTasksBot.FunctionApp"
+prompt_args=()
+if [ -n "${SMOKE_PROMPT_FILE:-}" ]; then
+  prompt_args=(--prompt "$(cat "$SMOKE_PROMPT_FILE")")
+fi
+model_args=()
+if [ -n "${SMOKE_MODEL:-}" ]; then
+  model_args=(--model "$SMOKE_MODEL")
+fi
+exec dotnet run --project tools/LlmSmoke/LlmSmoke.csproj --configuration Release -- \
+  "${prompt_args[@]}" "${model_args[@]}" --execute

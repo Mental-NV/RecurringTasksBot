@@ -1,4 +1,4 @@
-using RecurringTasksBot.Core;
+using RecurringTasksBot.Application;
 
 namespace RecurringTasksBot.Tests;
 
@@ -76,9 +76,9 @@ public sealed class SchedulerTests
         for (var i = 0; i < 10; i++)
         {
             var prev = state.NextScheduledUtc;
-            state = Scheduler.AdvanceAfterOccurrence(state, s, state.NextScheduledUtc, now);
+            state = Scheduler.AdvanceAfterOccurrence(state, s, state.NextScheduledUtc!.Value, now);
             Assert.True(state.NextScheduledUtc > prev);
-            now = state.NextScheduledUtc.AddSeconds(1);
+            now = state.NextScheduledUtc!.Value.AddSeconds(1);
         }
 
         Assert.Equal(10, state.OccurrenceIndex);

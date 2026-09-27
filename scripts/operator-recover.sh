@@ -7,28 +7,76 @@
 # prints the exact /create command needed to reschedule when required.
 #
 # Usage:
-#   ./scripts/operator-recover.sh recover [--stale-minutes N] [--apply]
-#   ./scripts/operator-recover.sh restart <operation-id> [--apply]
+#   ./scripts/operator-recover.sh recover [--env dev|prod] [--stale-minutes N] [--apply]
+#   ./scripts/operator-recover.sh restart <operation-id> [--env dev|prod] [--apply]
 #
 # Env: AZURE_STORAGE_CONNECTION_STRING (presence only, never printed)
-# Flags: --table (default RecurringTasks)
+# Flags (--env, --table, --apply) may appear before or after the command
+# and operation id. Unknown flags are rejected: every argument is parsed
+# before the storage account is validated, so --env always takes effect.
 set -euo pipefail
 
-TABLE="RecurringTasks"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$REPO_ROOT/src/RecurringTasksBot.FunctionApp"
+
+TABLE=""
+ENV_NAME=""
 STALE_MINUTES=15
 APPLY=0
-CMD="${1:-}"; shift || true
-
-if [ -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then echo "Missing AZURE_STORAGE_CONNECTION_STRING" >&2; exit 1; fi
+CMD=""
+OP_ID=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --stale-minutes) STALE_MINUTES="${2:-}"; shift 2 ;;
+    --env) ENV_NAME="${2:-}"; shift 2 ;;
     --table) TABLE="${2:-}"; shift 2 ;;
     --apply) APPLY=1; shift ;;
-    *) break ;;
+    --*) echo "Unknown argument: $1" >&2; exit 2 ;;
+    *)
+      if [ -z "$CMD" ]; then CMD="$1";
+      elif [ -z "$OP_ID" ]; then OP_ID="$1";
+      else echo "Unexpected argument: $1" >&2; exit 2; fi
+      shift ;;
   esac
 done
+
+if [ -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then echo "Missing AZURE_STORAGE_CONNECTION_STRING" >&2; exit 1; fi
+
+# Development names come from the dev runtime profile; production names
+# come from the canonical deployment parameter template.
+TEMPLATE="$REPO_ROOT/infra/main.parameters.json"
+if [ -n "$ENV_NAME" ]; then
+  case "$ENV_NAME" in
+    dev|prod) ;;
+    *) echo "Unknown --env '$ENV_NAME' (expected dev|prod)" >&2; exit 2 ;;
+  esac
+  if [ "$ENV_NAME" = "prod" ]; then
+    [ -z "$TABLE" ] && TABLE=$(python3 -c "import json; print(json.load(open('$TEMPLATE'))['parameters']['tableName']['value'])")
+  else
+    [ -z "$TABLE" ] && TABLE=$(python3 -c "import json; print(json.load(open('$APP_DIR/appsettings.json'))['RecurringTasksBot']['TableName'])")
+  fi
+fi
+[ -z "$TABLE" ] && TABLE="RecurringTaskData"
+echo "Target table: $TABLE${ENV_NAME:+ (env $ENV_NAME)}"
+
+if [ -n "$ENV_NAME" ]; then
+  if [ "$ENV_NAME" = "prod" ]; then
+    EXPECTED_ACCOUNT=$(python3 -c "import json; print(json.load(open('$TEMPLATE'))['parameters']['storageAccountName']['value'])")
+  else
+    EXPECTED_ACCOUNT=$(python3 -c "import json; print(json.load(open('$REPO_ROOT/infra/environments/development.json'))['azure']['storageAccountName'])")
+  fi
+  ACTUAL_ACCOUNT=$(python3 -c "
+cs = '''$AZURE_STORAGE_CONNECTION_STRING'''.replace(chr(10), '')
+for part in cs.split(';'):
+    if part.startswith('AccountName='):
+        print(part.split('=', 1)[1]); break
+")
+  if [ "$EXPECTED_ACCOUNT" != "$ACTUAL_ACCOUNT" ]; then
+    echo "Storage account mismatch: --env $ENV_NAME expects '$EXPECTED_ACCOUNT' but credentials name '$ACTUAL_ACCOUNT'. Refusing to run." >&2
+    exit 1
+  fi
+fi
 
 export AZURE_STORAGE_CONNECTION_STRING
 
@@ -61,9 +109,7 @@ for r in json.load(sys.stdin):
     fi
     ;;
   restart)
-    OP_ID="${1:-}"; shift || true
     if [ -z "$OP_ID" ]; then echo "Usage: $0 restart <operation-id> [--apply]" >&2; exit 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --apply) APPLY=1; shift ;; --table) TABLE="${2:-}"; shift 2 ;; *) shift ;; esac; done
     echo "Failed operation(s) RowKey=operation_${OP_ID}:"
     rows=$(az storage entity query --table-name "$TABLE" \
       --filter "RowKey eq 'operation_${OP_ID}' and Status eq 'failed'" \

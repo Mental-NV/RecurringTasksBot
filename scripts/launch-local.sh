@@ -7,7 +7,9 @@
 #   RecurringTasksBot__AzureWebJobsStorage
 set -euo pipefail
 
-DEV_PROFILE="appsettings.Development.json"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$REPO_ROOT/src/RecurringTasksBot.FunctionApp"
+DEV_PROFILE="$APP_DIR/appsettings.Development.json"
 TUNNEL_URL=""
 
 while [ $# -gt 0 ]; do
@@ -61,7 +63,18 @@ fi
 
 export ASPNETCORE_ENVIRONMENT=Development
 export AZURE_FUNCTIONS_ENVIRONMENT=Development
-export AzureFunctionsJobHost__extensions__durableTask__hubName="RecurringTasksDev"
+# Platform hub comes from the development runtime profile, never a hardcoded
+# name. TASK_HUB_NAME may override it explicitly for a throwaway hub.
+PROFILE_HUB=$(python3 -c "import json; print(json.load(open('$DEV_PROFILE'))['RecurringTasksBot']['TaskHubName'])")
+ENV_FILE="$REPO_ROOT/infra/environments/development.json"
+ENV_HUB=$(python3 -c "import json; print(json.load(open('$ENV_FILE')).get('taskHubName', ''))")
+if [ -z "$PROFILE_HUB" ]; then echo "No task hub configured in $DEV_PROFILE" >&2; exit 1; fi
+if [ -n "$ENV_HUB" ] && [ "$PROFILE_HUB" != "$ENV_HUB" ]; then
+  echo "Hub mismatch: runtime profile names '$PROFILE_HUB' but $ENV_FILE names '$ENV_HUB'. Refusing to start." >&2
+  exit 1
+fi
+EFFECTIVE_HUB="${TASK_HUB_NAME:-$PROFILE_HUB}"
+export AzureFunctionsJobHost__extensions__durableTask__hubName="$EFFECTIVE_HUB"
 # The Functions host and the Durable extension both need the storage
 # connection under its plain name as well.
 export AzureWebJobsStorage="$RecurringTasksBot__AzureWebJobsStorage"
@@ -78,5 +91,5 @@ echo "Starting Functions host (Development). Press Ctrl+C to stop."
 # Start from the function app directory (validation above already ran at
 # repo root). The runtime is pinned explicitly: Core Tools language
 # detection does not recognize this project's target framework.
-cd src/RecurringTasksBot
+cd "$APP_DIR"
 func start --dotnet-isolated

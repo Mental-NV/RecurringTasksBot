@@ -4,6 +4,9 @@
 # Refuses to run when the token belongs to the production bot.
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$REPO_ROOT/src/RecurringTasksBot.FunctionApp"
+
 TUNNEL_URL="${1:-}"
 case "$TUNNEL_URL" in
   https://*) ;;
@@ -13,10 +16,10 @@ esac
 if [ -z "${RecurringTasksBot__Telegram__BotToken:-}" ]; then echo "Missing RecurringTasksBot__Telegram__BotToken" >&2; exit 1; fi
 if [ -z "${RecurringTasksBot__Telegram__WebhookSecret:-}" ]; then echo "Missing RecurringTasksBot__Telegram__WebhookSecret" >&2; exit 1; fi
 
-DEV_PROFILE="appsettings.Development.json"
-PROD_PROFILE="appsettings.Production.json"
+DEV_PROFILE="$APP_DIR/appsettings.Development.json"
+PARAMS_TEMPLATE="$REPO_ROOT/infra/main.parameters.json"
 EXPECTED_DEV_ID=$(python3 -c "import json; print(json.load(open('$DEV_PROFILE'))['RecurringTasksBot']['ExpectedBotId'])")
-PROD_BOT_ID=$(python3 -c "import json; print(json.load(open('$PROD_PROFILE'))['RecurringTasksBot']['ExpectedBotId'])")
+PROD_BOT_ID=$(python3 -c "import json; print(json.load(open('$PARAMS_TEMPLATE'))['parameters']['expectedBotId']['value'])")
 ACTUAL_BOT_ID=$(curl -sS "https://api.telegram.org/bot${RecurringTasksBot__Telegram__BotToken}/getMe" | python3 -c "import json,sys; print(json.load(sys.stdin).get('result', {}).get('id', ''))")
 
 if [ "$ACTUAL_BOT_ID" != "$EXPECTED_DEV_ID" ]; then

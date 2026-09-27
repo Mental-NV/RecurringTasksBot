@@ -1,5 +1,5 @@
 using Moq;
-using RecurringTasksBot.Core;
+using RecurringTasksBot.Application;
 
 namespace RecurringTasksBot.Tests;
 

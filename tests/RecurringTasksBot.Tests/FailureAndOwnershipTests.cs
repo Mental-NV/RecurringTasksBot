@@ -1,4 +1,4 @@
-using RecurringTasksBot.Core;
+using RecurringTasksBot.Application;
 
 namespace RecurringTasksBot.Tests;
 
@@ -104,17 +104,17 @@ public sealed class OwnershipTests
     public async Task Delivery_IsOwnerScoped()
     {
         var ops = new FakeOperationStore();
-        var d = new FakeDeliveryStore();
         var sender = new FakeTelegramSender();
         ops.Seed(TestRecords.Operation("alice", "opA"));
-        var h = new DeliveryHandler(ops, d, new FakePayloadStore(), sender,
-            new FakeLlmExecutor(), TestLlm.Options());
+        var clock = new FakeClock();
+        var h = new ExecuteOccurrenceHandler(ops, new FakeOccurrenceRepository(ops, clock), sender,
+            new FakeLlmExecutor(), TestLlm.Execution(), TestLlm.ProviderName, TestLlm.ModelName, clock);
 
-        var result = await h.DeliverAsync("mallory", "opA",
-            new DateTime(2026, 1, 5, 9, 0, 0, DateTimeKind.Utc));
+        var result = await h.ExecuteAttemptAsync("mallory", "opA",
+            new DateTime(2026, 1, 5, 9, 0, 0, DateTimeKind.Utc), 0);
 
-        Assert.Equal(DeliveryOutcome.SkippedDeletedOrFailed, result.Outcome);
-        Assert.Empty(sender.Sent);
+        Assert.Equal(SingleAttemptOutcome.SkippedStopped, result.Outcome);
+        Assert.Empty(sender.Payloads);
     }
 
     [Fact]

@@ -3,12 +3,16 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "location": { "value": "switzerlandnorth" },
-    "functionAppName": { "value": "func-recurringtasks-prod" },
+    "functionAppName": { "value": "__FUNCTION_APP_NAME__" },
     "planName": { "value": "plan-recurringtasks-prod" },
     "storageAccountName": { "value": "prodrecurringtasksbot" },
-    "taskHubName": { "value": "RecurringTasksProd" },
-    "tableName": { "value": "RecurringTasks" },
-    "expectedBotId": { "value": "0" },
-    "webhookUrl": { "value": "https://func-recurringtasks-prod.azurewebsites.net/api/webhook" }
+    "taskHubName": { "value": "RecurringTasksAppProd" },
+    "tableName": { "value": "RecurringTaskData" },
+    "expectedBotId": { "value": "8814430865" },
+    "webhookUrl": { "value": "__PRODUCTION_WEBHOOK_URL__" },
+    "storageConnectionString": { "value": "__STORAGE_CONNECTION_STRING__" },
+    "telegramBotToken": { "value": "__TELEGRAM_BOT_TOKEN__" },
+    "telegramWebhookSecret": { "value": "__TELEGRAM_WEBHOOK_SECRET__" },
+    "llmApiKey": { "value": "__LLM_API_KEY__" }
   }
 }

@@ -33,7 +33,7 @@ param telegramWebhookSecret string
 @secure()
 param llmApiKey string
 
-@description('Durable task hub. Must stay RecurringTasksProd across deployments.')
+@description('Durable task hub for the current state. Must match the selected environment file taskHubName.')
 param taskHubName string
 
 @description('Business table name.')

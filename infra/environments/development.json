@@ -1,0 +1,12 @@
+{
+  "environment": "development",
+  "azure": {
+    "subscriptionId": "895bbba2-f762-48f6-83b9-e7029b6f3e96",
+    "tenantId": "3cbe8c53-bbb6-4d37-a351-aad589269d5e",
+    "resourceGroup": "rg-recurringtasksbot",
+    "region": "switzerlandnorth",
+    "storageAccountName": "devrecurringtasksbot"
+  },
+  "tableName": "RecurringTaskData",
+  "taskHubName": "RecurringTasksAppDev"
+}

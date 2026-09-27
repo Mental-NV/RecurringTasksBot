@@ -1,0 +1,10 @@
+{
+  "environment": "production",
+  "azure": {
+    "subscriptionId": "895bbba2-f762-48f6-83b9-e7029b6f3e96",
+    "tenantId": "3cbe8c53-bbb6-4d37-a351-aad589269d5e",
+    "oidcClientId": "a6af2309-eb73-4ab5-8fac-1b73350bcc42",
+    "resourceGroup": "rg-recurringtasksbot",
+    "region": "switzerlandnorth"
+  }
+}
