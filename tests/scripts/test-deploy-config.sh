@@ -18,7 +18,9 @@ TEMPLATE="infra/main.parameters.json"
 
 # 1. Workflow shape.
 grep -q "workflow_dispatch" "$WF" || fail "deploy workflow lacks workflow_dispatch"
-grep -qE "^[[:space:]]+push:" "$WF" && fail "deploy workflow still runs on push"
+grep -qE "^[[:space:]]+push:" "$WF" || fail "deploy workflow does not run on push"
+grep -q "branches: \[master\]" "$WF" || fail "deploy workflow does not target the master branch"
+grep -q "'docs/\*\*'" "$WF" || fail "deploy workflow does not ignore docs"
 grep -q "fresh_cutover\|retire_old_state" "$WF" && fail "cutover/retirement branches remain"
 grep -q "parameters: >" "$WF" && fail "inline Bicep parameter overrides remain"
 grep -q "parameters: \${{ env.RESOLVED_PARAMS }}" "$WF" || fail "params file not passed to deployment"

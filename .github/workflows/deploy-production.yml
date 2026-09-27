@@ -1,7 +1,11 @@
 name: Deploy production
 
-# Explicit operator invocation only. A push must never deploy.
+# Deploy on push to master (excluding docs) or explicit operator invocation.
 on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
