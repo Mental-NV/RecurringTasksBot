@@ -49,8 +49,13 @@ removed only with deleted-operation cleanup.
 
 `Llm:ReasoningEffort` maps to the request `reasoning.effort` (default
 `Maximum`). Search uses the provider tool (`max_tool_calls` =
-`MaxSearches` 8, up to 5 results per call, 40 total). These are upper
-bounds, not required usage.
+`MaxSearches` 8, up to 5 results per call, 40 total) with
+`engine: parallel`, `mode: fast` (see
+[Configuration](Configuration.md) for overrides, pricing, and
+rollback). These are upper bounds, not required usage; each LLM
+request may issue multiple searches. Fast-mode language coverage is
+unspecified upstream — verify multilingual quality with a live smoke
+check after rollout.
 
 ## Transport and errors
 

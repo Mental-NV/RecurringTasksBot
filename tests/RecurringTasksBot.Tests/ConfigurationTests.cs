@@ -39,7 +39,8 @@ public sealed class ConfigurationTests
         Assert.Equal("deepseek/deepseek-v4.1-flash", provider.Model);
         Assert.Equal("Maximum", provider.ReasoningEffort);
         Assert.True(provider.SearchEnabled);
-        Assert.Equal("exa", provider.SearchEngine);
+        Assert.Equal("parallel", provider.SearchEngine);
+        Assert.Equal("fast", provider.SearchMode);
         Assert.Equal(8, provider.MaxSearches);
         Assert.Equal(5, provider.MaxResultsPerSearch);
         Assert.Equal(40, provider.MaxTotalResults);
@@ -58,6 +59,27 @@ public sealed class ConfigurationTests
         Assert.Equal(ExecutionOptions.None, execution.MemoryMode);
         Assert.Equal(100, execution.DeclaredContextTokens);
         execution.Validate();
+    }
+
+    [Fact]
+    public void ExplicitSearchEngineAndMode_OverrideDefaults()
+    {
+        var provider = AppConfiguration.ReadOpenRouter(Config(
+            new Dictionary<string, string?>
+            {
+                ["RecurringTasksBot:Llm:SearchEngine"] = "exa",
+                ["RecurringTasksBot:Llm:SearchMode"] = "turbo",
+            }));
+        Assert.Equal("exa", provider.SearchEngine);
+        Assert.Equal("turbo", provider.SearchMode);
+        provider.Validate();
+    }
+
+    [Fact]
+    public void WhitespaceSearchMode_FailsValidation()
+    {
+        var provider = TestLlm.Provider() with { SearchMode = "  " };
+        Assert.Throws<InvalidOperationException>(() => provider.Validate());
     }
 
     [Theory]
@@ -134,6 +156,24 @@ public sealed class ConfigurationTests
         {
             Directory.Delete(dir, recursive: true);
         }
+    }
+
+    [Fact]
+    public void CheckedInDefaults_SelectParallelFastSearch()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null && !File.Exists(Path.Combine(dir, "RecurringTasksBot.sln")))
+            dir = Directory.GetParent(dir)?.FullName;
+        Assert.True(dir is not null, "Repository root with RecurringTasksBot.sln was not found.");
+        var config = AppConfiguration.Load(
+            Path.Combine(dir!, "src", "RecurringTasksBot.FunctionApp"), "Production");
+        var provider = AppConfiguration.ReadOpenRouter(config);
+        Assert.Equal("parallel", provider.SearchEngine);
+        Assert.Equal("fast", provider.SearchMode);
+        Assert.Equal(8, provider.MaxSearches);
+        Assert.Equal(5, provider.MaxResultsPerSearch);
+        Assert.Equal(40, provider.MaxTotalResults);
+        provider.Validate();
     }
 
     [Fact]

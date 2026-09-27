@@ -10,6 +10,7 @@ public sealed record OpenRouterOptions(
     string ReasoningEffort,
     bool SearchEnabled,
     string SearchEngine,
+    string SearchMode,
     int MaxSearches,
     int MaxResultsPerSearch,
     int MaxTotalResults)
@@ -30,6 +31,8 @@ public sealed record OpenRouterOptions(
                 "LLM web search is disabled by configuration. Scheduled research requires search; refusing to silently run without it.");
         if (string.IsNullOrWhiteSpace(SearchEngine))
             throw new InvalidOperationException("LLM search engine is not configured.");
+        if (string.IsNullOrWhiteSpace(SearchMode))
+            throw new InvalidOperationException("LLM search mode is not configured.");
         if (MaxSearches <= 0 || MaxResultsPerSearch <= 0 || MaxTotalResults <= 0)
             throw new InvalidOperationException("LLM search limits must be positive.");
     }

@@ -46,6 +46,7 @@ public static class OpenRouterRequestBuilder
             writer.WriteString("type", OpenRouterLlmExecutor.ServerToolType);
             writer.WriteStartObject("parameters");
             writer.WriteString("engine", provider.SearchEngine);
+            writer.WriteString("mode", provider.SearchMode);
             writer.WriteNumber("max_results", provider.MaxResultsPerSearch);
             writer.WriteNumber("max_total_results", provider.MaxTotalResults);
             writer.WriteNumber("max_uses", provider.MaxSearches);

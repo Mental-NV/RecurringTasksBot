@@ -10,8 +10,9 @@
 //   reasoning out of the response (still billed, still shares the
 //   completion-token budget).
 // - Completion budget uses max_completion_tokens (max_tokens deprecated).
-// - Search uses the openrouter:web_search server tool with the Exa engine;
-//   the web plugin and :online suffix are deprecated and never sent.
+// - Search uses the openrouter:web_search server tool with the Parallel
+//   engine in fast mode; the web plugin and :online suffix are deprecated
+//   and never sent.
 // - deepseek/deepseek-v4.1-flash exists with max_completion_tokens 393216,
 //   so the 131,072 budget fits; supported_parameters includes reasoning,
 //   reasoning_effort, tools, and max_completion_tokens.
@@ -34,7 +35,8 @@ public sealed class OpenRouterLlmExecutor(
         ExecuteMessagesAsync(request.Messages, request.MaxSourceScalars, ct);
 
     public const string ServerToolType = "openrouter:web_search";
-    public const string SearchEngineExa = "exa";
+    public const string SearchEngineParallel = "parallel";
+    public const string SearchModeFast = "fast";
 
     private static readonly HashSet<string> SupportedEfforts = new(StringComparer.OrdinalIgnoreCase)
     {

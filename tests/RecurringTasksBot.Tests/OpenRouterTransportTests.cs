@@ -213,7 +213,8 @@ public sealed class OpenRouterTransportTests
         var tool = tools[0];
         Assert.Equal("openrouter:web_search", tool.GetProperty("type").GetString());
         var parameters = tool.GetProperty("parameters");
-        Assert.Equal("exa", parameters.GetProperty("engine").GetString());
+        Assert.Equal("parallel", parameters.GetProperty("engine").GetString());
+        Assert.Equal("fast", parameters.GetProperty("mode").GetString());
         Assert.Equal(5, parameters.GetProperty("max_results").GetInt32());
         Assert.Equal(10, parameters.GetProperty("max_total_results").GetInt32());
         Assert.Equal(2, parameters.GetProperty("max_uses").GetInt32());

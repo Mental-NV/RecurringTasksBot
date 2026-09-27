@@ -575,7 +575,8 @@ public static class TestLlm
         Model: ModelName,
         ReasoningEffort: "Maximum",
         SearchEnabled: true,
-        SearchEngine: "exa",
+        SearchEngine: "parallel",
+        SearchMode: "fast",
         MaxSearches: 2,
         MaxResultsPerSearch: 5,
         MaxTotalResults: 10);

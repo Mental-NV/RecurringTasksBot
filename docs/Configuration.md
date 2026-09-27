@@ -25,10 +25,6 @@ fail startup; code defaults apply only when a key is absent.
 | `RecurringTasksBot:StorageAccountName` | `launch-local.sh` storage guard; operator `--env dev` credential guard | `dev…` (production canonical in the parameter template) |
 | `RecurringTasksBot:ExpectedBotId` | `launch-local.sh` bot guard; dev `/poll` / webhook guards | Dev bot ID (production canonical in the parameter template) |
 | `RecurringTasksBot:WebhookUrl` | Dev profile only: recorded tunnel URL | Local tunnel URL |
-
-There is no `appsettings.Production.json`: every production value above
-lives once in `infra/main.parameters.json` and reaches the host through
-Bicep-provisioned app settings.
 | `RecurringTasksBot:Memory:Mode` | `ExecutionOptions` | `PreviousSuccessfulReply` (`None` disables) |
 | `RecurringTasksBot:Llm:Provider` / `BaseUrl` | `OpenRouterOptions` | `OpenRouter` / `https://openrouter.ai/api/v1` |
 | `RecurringTasksBot:Llm:Model` | `OpenRouterOptions` | `deepseek/deepseek-v4.1-flash` |
@@ -41,9 +37,33 @@ Bicep-provisioned app settings.
 | `RecurringTasksBot:Llm:SearchContextReserveTokens` | `ExecutionOptions` | `65536` |
 | `RecurringTasksBot:Llm:ContextEnvelopeReserveTokens` | `ExecutionOptions` | `8192` |
 | `RecurringTasksBot:Llm:GenerationRetries` | `ExecutionOptions` | `2` |
-| `RecurringTasksBot:Llm:SearchEnabled` / `SearchEngine` | `OpenRouterOptions` | `true` / `exa` |
+| `RecurringTasksBot:Llm:SearchEnabled` / `SearchEngine` / `SearchMode` | `OpenRouterOptions` | `true` / `parallel` / `fast` |
 | `RecurringTasksBot:Llm:MaxSearches` / `MaxResultsPerSearch` / `MaxTotalResults` | `OpenRouterOptions` | `8` / `5` / `40` |
 | `RecurringTasksBot:Llm:SystemInstruction` | `ExecutionOptions` | `""` (appended to the system template) |
+
+There is no `appsettings.Production.json`: every production value above
+lives once in `infra/main.parameters.json` and reaches the host through
+Bicep-provisioned app settings.
+
+## Web search engine and mode
+
+Outbound search uses the OpenRouter `openrouter:web_search` server
+tool with `engine: parallel`, `mode: fast` (serialized at
+`tools[0].parameters`). Environment overrides are
+`RecurringTasksBot__Llm__SearchEngine` and
+`RecurringTasksBot__Llm__SearchMode`. Pricing assumption (verified
+2026-09-27): Parallel `fast`/`turbo` cost $0.001/search covering up
+to 10 results per search; additional results cost $0.001 each, and
+retries can create additional billable requests. Fast-mode language
+coverage is unspecified upstream, so multilingual answer quality
+requires a live check after rollout. Rollback: set
+`SearchEngine=exa` with `SearchMode=fast` (Exa also supports Fast
+mode). Production has no JSON profile; deploy these as app settings:
+
+```text
+RecurringTasksBot__Llm__SearchEngine=parallel
+RecurringTasksBot__Llm__SearchMode=fast
+```
 
 ## Platform and deployment settings
 

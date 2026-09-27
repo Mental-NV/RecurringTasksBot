@@ -46,7 +46,8 @@ public static class AppConfiguration
         Model: Str(config, $"{Section}:Llm:Model", "deepseek/deepseek-v4.1-flash"),
         ReasoningEffort: Str(config, $"{Section}:Llm:ReasoningEffort", "Maximum"),
         SearchEnabled: Bool(config, $"{Section}:Llm:SearchEnabled", true),
-        SearchEngine: Str(config, $"{Section}:Llm:SearchEngine", "exa"),
+        SearchEngine: Str(config, $"{Section}:Llm:SearchEngine", "parallel"),
+        SearchMode: Str(config, $"{Section}:Llm:SearchMode", "fast"),
         MaxSearches: Int(config, $"{Section}:Llm:MaxSearches", 8),
         MaxResultsPerSearch: Int(config, $"{Section}:Llm:MaxResultsPerSearch", 5),
         MaxTotalResults: Int(config, $"{Section}:Llm:MaxTotalResults", 40));
