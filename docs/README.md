@@ -33,6 +33,8 @@ copying configuration tables or procedures.
 
 ## Plan
 
+- [Phase 5 specification](Spec.Phase5.md) — JSON create/get/update, compact list,
+  inherited defaults, scheduling, field permissions, and fresh storage.
 - [Backlog](Backlog.md) — open scale/security questions and future ideas.
 - [History](History/README.md) — frozen historical specs (not current
   guidance). The consolidation plan is `Spec.Phase4.md` in this folder.
