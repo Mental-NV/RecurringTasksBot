@@ -13,8 +13,9 @@ storage with no migration or backward compatibility for old tasks.
 /list [page] [compact]
 ```
 
-Create/update share field definitions. Create requires `prompt` and `schedule`;
-update changes only supplied fields. Generation parameters inherit live global
+Create/update share field definitions. Create requires `schedule` and a `prompt`
+supplied in JSON or resolved from a replied-to message. Update changes only
+supplied fields. Generation parameters inherit live global
 defaults unless explicitly overridden; schedule identity and limits do not.
 
 | Field | Accepted values | Default / inheritance |
@@ -77,8 +78,10 @@ Store only explicit overrides on the task. Changing a global default affects
 future occurrences of existing inheriting tasks after configuration rollout;
 tasks do not need recreation. Hot configuration reload is not required.
 
-At occurrence initialization, resolve all three values from one configuration
-snapshot and freeze them with its revision. Retries retain that snapshot.
+At the first successful occurrence claim, atomically persist all three resolved
+values from one configuration snapshot, its revision, and the task definition
+revision with the count reservation. No claimed occurrence may lack its settings
+snapshot. Retries retain that snapshot, including after a crash before generation.
 The adapter receives these effective settings and must not override them again
 from provider configuration. Validate global defaults at startup/config rollout
 and validate the effective task settings before a new occurrence starts.
@@ -148,6 +151,12 @@ filter past explicit dates. Normal command receipt handling applies.
   unchanged schedule/deadline is a no-op for those fields: do not reset activation,
   the waterline, the count, or revalidate past dates as new input. A changed
   `schedule` replaces both sources and undergoes full replacement validation.
+  For schedule comparison, ignore JSON key order, cron whitespace, explicit-date
+  array order, and absent versus empty `once`. Preserve the saved representation
+  on a no-op. Check the array cap and duplicate dates before comparison.
+  Other cron text changes count as replacement; do not attempt to prove
+  equivalence between differently written expressions. This prevents an effective
+  object's default `once: []` from restarting an unchanged cron schedule.
 - Use `/get <task-id> explicit` as the editing source and submit small patches.
   A complete effective object is valid settings-shaped input: its supplied
   concrete generation values become overrides. This intentionally pins those
@@ -166,11 +175,18 @@ without advancing the task revision.
 
 ### Common command validation
 
-Enforce the field allowlists in Section 4 before applying a command. Reject
+Enforce the field allowlists in Section 4 recursively before applying a command.
+JSON field names and enum values are case-sensitive. Reject
 unknown/duplicate keys, system-managed fields, wrong types, unsupported nulls,
-and empty patches. Validate the resulting definition and effective settings
-atomically; no partial application. Enforce task ownership for every task command;
-never trust owner/destination identifiers supplied in JSON. Schedule replacement
+and patches with no leaf fields. Only the five parameter fields accept `null`;
+`parameters: null`, `schedule: null`, and `schedule.cron: null` are invalid.
+Validate structure before no-op comparison, then validate the resulting definition
+and effective settings atomically; no partial application. Apply future-date checks
+only to creation, changed schedule/deadline fields, and reactivation. Retained past
+dates or an expired unchanged deadline must not block an unrelated edit.
+Enforce task ownership for every task command;
+missing, deleted, and another owner's task return the same `task_not_found`.
+Never trust owner/destination identifiers supplied in JSON. Schedule replacement
 omits `cron` to remove recurrence and omits `once` (or uses `[]`) to remove explicit
 dates. At least one source must remain.
 
@@ -185,8 +201,12 @@ task revisions; the defaults revision identifies the effective configuration.
 
 ### `/list [page] [compact]`
 
-Show owner-scoped tasks as a compact table with ten tasks per page. Group rows by
-task timezone and show zone/year once in each group; include the year in a cell
+Show nondeleted owner-scoped tasks, including completed/failed tasks, with ten tasks
+per page. Default to page 1; reject nonpositive/noninteger page values and extra
+arguments. Sort by creation time descending, then task ID, select the page, and
+group its rows by timezone. An empty page returns a short empty-result message.
+Show rows as a compact table with zone/current local year once in each group;
+include the year in a cell
 when its occurrence belongs to a different year. Columns are:
 
 | ID | Status | Next | Prompt |
@@ -197,11 +217,18 @@ when its occurrence belongs to a different year. Columns are:
 - **Use `executing` in Status.** Next denotes the following scheduled occurrence,
   excluding the already claimed one; show `—` if none is eligible. A due/overdue
   task is not automatically executing. Label retry waits `retrying`.
+  For idle active tasks, Next is the latest due instant, otherwise the earliest
+  future instant. For claimed work, calculate it beyond the claimed instant and
+  any replacement activation boundary. Apply current stop limits and the already
+  reserved count. This is a schedule preview, not a promised execution time;
+  catch-up may coalesce it after a long run. Completed/failed tasks show `—`.
 - Derive display status from current occurrence/lease information, not Durable's
   generic running status (which includes timer waits). A stale/unconfirmed lease
-  shows `recovering` or `unknown`; task lifecycle status remains separate. This is
-  a snapshot when `/list` is requested, not a continuously updating display.
-- Display a unique owner-scoped ID prefix, initially six characters and lengthened
+  shows `recovering` when a pending occurrence is known, otherwise `unknown`;
+  task lifecycle status remains separate. This is a snapshot when `/list` is
+  requested, not a continuously updating display.
+- Display an ID prefix unique across the owner's nondeleted tasks, not just the
+  displayed page, initially six characters and lengthened
   when necessary. `/get`, `/update`, and `/delete` accept a full ID or a unique
   prefix of at least six characters. Reject ambiguous prefixes; never guess.
 - Use Telegram's native table with compact cells; allow date/time cell wrapping,
@@ -209,14 +236,16 @@ when its occurrence belongs to a different year. Columns are:
   and 18 display characters with an ellipsis. `/get` preserves the full prompt.
   Paginate without splitting a task row; repeat headers and timezone labels.
 - No API exposes the recipient's available pixel width. Validate supported mobile
-  layouts and provide a stacked fallback for clients that cannot render the table;
-  offer `/list <page> compact` to request it explicitly. Font size can still affect
-  rendering. Do not promise a universal four-column width guarantee.
+  layouts and use a stacked fallback if Telegram rejects table delivery;
+  `/list compact` or `/list <page> compact` requests it explicitly for client
+  rendering issues. Do not assume client capability can be detected. Font size can
+  still affect rendering. Do not promise a universal four-column width guarantee.
   ([Telegram compact tables](https://core.telegram.org/bots/api#inputrichblocktable))
 
 ## 2. Time model: one schedule in a named timezone
 
-**User contract:** `cronExpression` + `timezone` defines when a task is due.
+**User contract:** `schedule.cron` + `timezone` defines the recurring calendar rule;
+`schedule.once` adds explicit dates in the same zone.
 For example, `0 0 9 5 * *` in `Europe/Berlin` always means the fifth of the month
 at 09:00 on Berlin's calendar, subject to the explicit DST policies below.
 The timezone is part of the schedule, independent of the server or viewer.
@@ -227,10 +256,10 @@ formatting; it is not a validation gate or part of recurrence calculation.
 
 | Responsibility | Representation and rule |
 | --- | --- |
-| Task settings | Store the explicit cron and resolved IANA timezone with a schedule revision. The timezone is fixed for the task lifetime; timezone-data handling is defined below. `/get <task-id> explicit` preserves user-authored fields. |
+| Task settings | Store the explicit cron and resolved IANA timezone with the task definition revision. The timezone is fixed for the task lifetime; timezone-data handling is defined below. `/get <task-id> explicit` preserves user-authored fields. |
 | Occurrence resolver | Accept the rule, zone, and a UTC search boundary; return the next UTC instant or the latest due instant. Own all calendar matching and DST policy in this one component. |
 | Execution | Persist `scheduledUtc`, contributing sources, and revision; use UTC for timers, ordering, waterline, expiration, and deduplication. |
-| Presentation | Show the saved local rule and format resolved instants in the task timezone, including their offsets. Presentation never feeds back into scheduling. |
+| Presentation | Format resolved instants in the task timezone. Confirmations include offsets and UTC; compact lists use the named zone. Get-mode settings retain the documented offset-free input format. Presentation never feeds back into scheduling. |
 
 Resolve occurrences on demand through a tested timezone-aware adapter. Use the
 timezone library's gap/ambiguity APIs and preserve the existing cron dialect.
@@ -265,8 +294,11 @@ The gap and repeated-hour rules are explicit product policies, not defaults
 inherited from a cron library. .NET exposes checks for
 [invalid local times](https://learn.microsoft.com/en-us/dotnet/api/system.timezoneinfo.isinvalidtime?view=net-10.0)
 and [ambiguous offsets](https://learn.microsoft.com/en-us/dotnet/api/system.timezoneinfo.getambiguoustimeoffsets?view=net-10.0).
-A rule matching both day-of-month and weekday retains the existing **OR** semantics;
-additional weekday matches can therefore occur independently of a missing month day.
+When both day-of-month and weekday fields are restricted (not a bare `*`), retain
+the existing **OR** semantics. When only one is restricted, it alone controls day
+matching; two bare wildcards allow every day. Month remains a separate required
+match. With both day fields restricted, weekday matches can occur independently
+of a missing month day.
 
 Local calendar schedules keep the requested local hour as UTC offsets change.
 A daily rule therefore does not promise a fixed 24-hour interval. Missing local
@@ -284,7 +316,9 @@ as defined in Section 3.
 
 - One cron expression plus at most ten explicit dates; require at least one
   source. Use the full existing six-field grammar in every supported timezone,
-  with seconds exactly `0`. Reject unsupported syntax (`?`, `L`, `W`, `#`, year
+  ordered `seconds minutes hours day-of-month month day-of-week`, with seconds
+  exactly `0`. Retain wildcards, lists, ranges, steps, month/weekday names, and
+  Sunday as `0` or `7`. Reject unsupported syntax (`?`, `L`, `W`, `#`, year
   fields, macros). There are no conversion restrictions on multiple hours,
   weekday rules, or month boundaries.
 - Accept `UTC` or a resolvable IANA ID; reject abbreviations and unknown zones.
@@ -293,8 +327,12 @@ as defined in Section 3.
   uses that same input format.
 - Validate cron syntax, zone availability, local calendar dates, supported time
   range, and explicit gap/ambiguity policy. Require a future resolved cron
-  occurrence within the existing search horizon (about five years), even when
-  explicit dates are also supplied. Invalid recurring dates are skipped.
+  occurrence within the existing search horizon (`MaxSearchDays = 1832` local
+  calendar days), even when explicit dates are also supplied. Apply this check on
+  creation, schedule replacement, and reactivation. Invalid recurring dates are
+  skipped. An exhausted runtime search horizon or permanent resolver error marks
+  the task `failed`; neither means a recurring schedule completed naturally.
+  Transient infrastructure errors use the existing retry policy.
 - Verify the resolver against known calendar/DST examples. Its next result must
   be strictly after the supplied UTC boundary; its latest-due result must be the
   greatest eligible instant at or before `nowUtc`, above the waterline. Returned
@@ -306,8 +344,9 @@ as defined in Section 3.
   resolves to `expiresAtUtc`, and must be strictly future at commit. New/replaced
   explicit dates must precede that deadline. Require at least one eligible future
   occurrence when creating/reactivating a task. `maxOccurrences` must be an integer
-  of at least 1 (no fractions, strings, or coercion). Unrelated updates retain
-  existing pending dates; tightening a limit may intentionally end the task.
+  from 1 through 2,147,483,647 (no fractions, strings, or coercion). Unrelated updates
+  retain existing pending dates. An expiration-only edit may exclude retained
+  dates without deleting them; tightening a limit may intentionally end the task.
 - Reject the whole command on failure. Return field path, stable error code, and
   correction: `timezone_invalid`, `cron_invalid`, `local_time_nonexistent`,
   `local_time_ambiguous`, `schedule_no_future_occurrence`, `schedule_date_invalid`,
@@ -373,12 +412,16 @@ explicit-date completion flags are needed to decide what to run:
    share one occurrence, one result, and one count increment.
 3. If nothing is due, wait until the earliest future merged instant or expiration,
    whichever comes first. Recheck limits, revision, and latest due time on wake-up.
-4. Claim the selected occurrence and reserve its count atomically. Serialize all
-   work for a task. Keep the waterline unchanged while this occurrence is active;
+4. Claim the selected occurrence, freeze its task/effective-settings snapshot,
+   and reserve its count atomically. Serialize all work for a task, including retry
+   waits and lease recovery: at most one nonterminal occurrence may exist.
+   Keep the waterline unchanged while this occurrence is active;
    its existing receipt/claim identifies work to resume after a crash.
 5. On terminal success **or exhausted failure**, atomically record the outcome
-   and set `waterlineUtc = max(waterlineUtc, scheduledUtc)`. Then repeat. Transient
-   failure leaves the waterline unchanged. A crash after commit must not rerun it.
+   and set `waterlineUtc = max(waterlineUtc, scheduledUtc, pendingActivationUtc)`
+   (omit the last value if no replacement is pending). Clear the applied activation
+   metadata in the same transaction. Then repeat. Transient failure leaves the
+   waterline unchanged. A crash after commit must not rerun it.
 
 Example: waterline `08:00Z`; due instants `09:00Z` (cron), `09:30Z` (explicit),
 and `10:00Z` (cron); current time `10:20Z`. Execute only `10:00Z`, then advance
@@ -400,21 +443,34 @@ A finite schedule still completes naturally when no eligible dates remain.
 | `expiresAt` | Convert local input once to `expiresAtUtc`. Start no new occurrence when `nowUtc >= expiresAtUtc`; instants at or after that deadline are ineligible. After downtime beyond expiration, do not catch up even pre-expiration dates. |
 | `maxOccurrences` | Lifetime maximum **started occurrences across cron and explicit dates**. Reserve one slot at the first successful claim; retries, collisions, and Telegram redelivery consume no extra slots. Terminal failures still count. |
 | Both supplied | Start only while both allow it. Once either closes, no further starts. An already claimed occurrence and its retries may finish normally. |
-| Completion | Once active work finishes, set `completed` with reason `expired`, `max_occurrences`, or `schedule_exhausted`. Retain the first stop reason reached; use expiration as the tie-breaker if both close in the same update. |
+| Completion | Once active work finishes, set `completed` when a limit closes or a one-time-only schedule is exhausted. Reasons are `expired`, `max_occurrences`, or `schedule_exhausted`. First reached wins; expiration wins an exact tie. |
 | Updating limits | Omitted fields retain values; `null` removes a limit. Increasing/removing a limit can reactivate a completed task if eligible future work remains. Lowering the count to/below the consumed count stops further starts immediately. Never reset the count or waterline. |
 
 Keep `startedOccurrences` as system-managed accounting, not a second time cursor.
-The execution claim transaction checks operation liveness, schedule revision,
+The execution claim transaction checks operation liveness, task definition revision,
 waterline, current expiration, and available count together, then increments the
 count only when creating a new occurrence. Resume the same receipt after a crash;
 an abandoned claim must not consume another slot. These checks serialize races
 between update/delete, limit changes, and execution admission.
 
+Persist the stop reason and its effective time when admission closes, including
+while a final occurrence is running. Count closure occurs at the claim or limit
+edit that reaches it; expiration occurs at the stored deadline, even during
+downtime. Compare those times rather than worker observation order. An explicit
+limit edit recomputes which limits still block admission; clear an obsolete reason
+when none does. Ordinary retries/restarts do not change the reason. These are
+completion metadata, not extra scheduling cursors.
+
+If no limit has closed, a one-time-only schedule completes after its last eligible
+date is consumed. When pending dates or cron remain but their next occurrence is
+at/after expiration, wait for the deadline and complete as `expired`. Check closed
+limits before natural exhaustion, so a final count-limited run uses `max_occurrences`.
+
 An expiration-only update on an active task preserves the calendar rule and
 waterline; wake the orchestration to replace its deadline timer. Reactivation
 follows the activation-boundary rule below. Already-resolved expiration remains
-an absolute UTC deadline when timezone rules change; resubmit `expiresAt` to change
-it. Confirm the deadline in local time and UTC.
+an absolute UTC deadline. Submit a different `expiresAt` value to change it;
+resubmitting the same value is a no-op. Confirm the deadline in local time and UTC.
 
 ### Schedule updates and retained progress
 
@@ -422,8 +478,11 @@ Never move the waterline backward. Replacing a schedule discards old unstarted
 dates; reactivating a completed task skips dates from its inactive period. Both
 admit future work from the update commit time. When no run is active, atomically
 advance `waterlineUtc` to at least that commit time. If a retained run is active,
-defer this advance until its terminal commit, using the replacement schedule's
-activation time as metadata. This is one waterline, with no per-source progress.
+defer this advance until its terminal commit, using `pendingActivationUtc` metadata.
+Multiple replacements retain the latest commit boundary and only the latest
+schedule; stale planning/timer results cannot claim work. Completion of the retained
+run applies that boundary without overwriting newer settings or limits. This is
+one waterline, with no per-source progress.
 
 The explicit array remains capped at ten entries per replacement. Exact collisions
 are allowed; duplicate instants within the array are rejected. Preserve the
@@ -455,7 +514,7 @@ Distinguish values that never change from values that only the system can change
 | Immutable task identity | `taskId`, `ownerId`, delivery `chatId`, `createdAtUtc` | Assign at creation; no rename, ownership transfer, or retargeting. Create a new task when identity/destination changes. |
 | Immutable task setting | `timezone` | User selects at creation; later changes are rejected. |
 | System-managed mutable state | `revision`, status, `waterlineUtc`, `startedOccurrences`, `updatedAtUtc` | Never accepted in create/update settings. Revision increments on an actual definition change; progress/count advance through execution. |
-| Immutable occurrence snapshot | `scheduledUtc`, effective generation settings, captured defaults revision | Freeze when the occurrence is claimed/initialized; retries reuse it. |
+| Immutable occurrence snapshot | `scheduledUtc`, prompt/schedule, task revision, effective generation settings, captured defaults revision | Freeze atomically at the first successful claim; retries reuse it. |
 | Editable task settings | Prompt, schedule, generation overrides, expiration, count limit | Retain current validation and update semantics. A fixed expiration instant is still editable through `expiresAt`. |
 
 **Enforcement:**
@@ -488,21 +547,38 @@ responsible for their own validated state transitions.
 **Update boundary:** apply changes atomically to an owner-scoped task using an
 ETag/revision check. Reject a concurrent edit with a retry message. Active tasks
 are editable; completed tasks can resume through a replacement schedule or relaxed
-limits if future work is eligible. Failed/deleted tasks require separate recovery
-or creation. Telegram retries reuse the original command result.
+limits if future work is eligible. Prompt/generation-only edits cannot reactivate
+a task. A changed schedule or relaxed limits on a completed task must yield eligible
+future work, otherwise reject the command; unchanged settings remain a no-op.
+Failed tasks are inspectable but reject updates; create a replacement task.
+Deleted tasks return `task_not_found`. Telegram retries reuse the original command result.
+Commit each mutation with its command identity and saved result/reference so a
+crash before replying cannot apply the patch again after a later edit. Replayed
+commands bypass fresh date validation and never reserve another occurrence.
 
-**Running work:** freeze settings when a run initializes; that run and its retries
+**Running work:** freeze settings at its first successful claim; that run and its retries
 finish with the same snapshot. Schedule changes cancel unstarted work and calculate
-future dates from the update commit time. Check the schedule revision atomically
+future dates from the update commit time. Check the task definition revision atomically
 before starting work; deduplicate by task and UTC instant across revisions.
 Recheck that submitted dates remain future at commit; command redelivery reuses
 the committed definition and result. Parameter/prompt-only changes preserve
 schedule progress; stop-limit edits follow the admission rules above.
+Revision checks govern new admission; a newer definition does not invalidate a
+retained occurrence's claim. Terminal occurrence failure consumes its time/count
+and permits later occurrences; task-level unrecoverable failure stops scheduling.
 
-**Scheduler coordination:** wake the existing orchestration on schedule or limit
-changes, cancel its old timer, and reload state. Save a pending notification
-atomically with the update and retry until accepted: storage and Durable Functions
-cannot be updated in one transaction.
+`/delete` overrides retained-run completion: tombstone first, stop admission and
+retries, request cancellation, and suppress further result/memory publication.
+An external request already in flight may finish; deletion cannot retract an
+already sent Telegram message. Never let a late completion revive a deleted task.
+
+**Scheduler coordination:** on creation/reactivation, ensure a lifecycle
+orchestration is running; start one if the previous instance has completed.
+On schedule or limit changes, wake it, cancel its old timer, and reload state.
+Persist the coordination request atomically with the command and retry until
+accepted: storage and Durable Functions cannot be updated in one transaction.
+Duplicate/stale notifications must be harmless; all planners and claims use the
+latest persisted state, and duplicate workers cannot admit concurrent occurrences.
 
 **Adding a parameter:** add one typed field with its default, validation, and
 documentation; carry it into the frozen execution settings and implement its
@@ -536,6 +612,7 @@ in the old task hub. ([Durable task hub state](https://learn.microsoft.com/en-us
   affect inheriting tasks, overrides remain fixed, and null resets restore inheritance.
 - **Updates:** unchanged explicit settings with past dates are a no-op; concrete
   effective values intentionally become overrides; omitted fields stay inherited.
+  Default-filled `once: []` and reordered dates do not restart unchanged work.
   Concurrent edits conflict safely. Revision changes only for actual definition
   changes. Unrelated updates do not reset schedules, waterlines, or counts.
 - **Time and scheduling:** known occurrence sequences across month/year boundaries,
@@ -545,10 +622,13 @@ in the old task hub. ([Durable task hub state](https://learn.microsoft.com/en-us
 - **Execution and limits:** frozen settings across retries; success and terminal
   failure advance the waterline once; count reserved once per occurrence; expiration
   during execution/downtime; limits tightened/removed; recovery after crashes around
-  claims, progress publication, update notification, and concurrent delete.
+  claims, progress publication, update notification, and concurrent delete;
+  repeated schedule edits during a run apply only the latest activation boundary;
+  stop reasons survive downtime and are reevaluated on explicit limit edits.
 - **List and deployment:** compact/mobile layouts, stacked fallback, pagination,
   accurate activity states, prefix collisions, and operation on fresh table/hub
   resources with old workers stopped. No old-schema migration tests are required.
 
-Related implementation context: [commands](TelegramCommands.md),
+This specification governs Phase 5 behavior where current implementation documents
+differ. Related implementation context: [commands](TelegramCommands.md),
 [scheduling](FunctionApp.md), [persistence](Persistence.md), [LLM](LLM.md).
