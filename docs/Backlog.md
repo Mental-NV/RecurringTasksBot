@@ -24,8 +24,8 @@
   - [x] [parameter] set a reasoning effort (low, med, high, xhigh, max), low by default
   - [ ] [parameter] choose a LLM model (through a profile name)
   - [x] [parameter] enable/disable web search (enabled by default)
-- [ ] Fix system prompt to ask AI to covert UTC time to local timezone
-- [ ] Update /list command to show effective expire date (what is first maxOccurence or expireAt)
+- [x] Fix system prompt to ask AI to covert UTC time to local timezone
+- [x] Update /list command to show effective expire date (what is first maxOccurence or expireAt)
 
 - [ ] Let agent to schedule future onetime occurence atomaticaly (tool calling) through user promt
 - [ ] Monetization using Telegram Start
