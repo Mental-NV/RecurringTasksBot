@@ -572,12 +572,14 @@ public sealed class TaskHandlerTests
         var table = Assert.Single(h.Transport.Payloads, p => p.Kind == TelegramPayloadKind.Table);
         Assert.Contains("a31f9c", table.Content, StringComparison.Ordinal);
         Assert.Contains("\"is_header\":true", table.Content, StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"Expire\"", table.Content, StringComparison.Ordinal);
         Assert.Contains("\"align\":\"left\"", table.Content, StringComparison.Ordinal);
         Assert.Contains("\"valign\":\"top\"", table.Content, StringComparison.Ordinal);
         // The reply record carries the stacked fallback, not pipe text.
         Assert.Contains("active", result.RepliesSent[0], StringComparison.Ordinal);
         Assert.Contains("·", result.RepliesSent[0], StringComparison.Ordinal);
         Assert.DoesNotContain("|", result.RepliesSent[0], StringComparison.Ordinal);
+        Assert.Contains("Expire —", result.RepliesSent[0], StringComparison.Ordinal);
     }
 
     [Fact]
@@ -591,6 +593,7 @@ public sealed class TaskHandlerTests
             h.Update(updateId: 8, text: "/list 1 compact"), "/list 1 compact", Now);
         Assert.DoesNotContain(h.Transport.Payloads, p => p.Kind == TelegramPayloadKind.Table);
         Assert.Contains("·", result.RepliesSent[0], StringComparison.Ordinal);
+        Assert.Contains("Expire —", result.RepliesSent[0], StringComparison.Ordinal);
     }
 
     [Fact]

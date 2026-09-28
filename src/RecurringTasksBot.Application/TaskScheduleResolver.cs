@@ -95,6 +95,80 @@ public static class TaskScheduleResolver
         return next;
     }
 
+    // Project the nth future admission for count-limit previews. Whole ordinary
+    // days are counted at once, so large limits do not loop once per occurrence.
+    // Boundary days, explicit dates, and DST transitions use the same candidate
+    // resolver as execution, including gap skipping and fold deduplication.
+    public static DateTime? GetNthMergedUtc(
+        string? cronExpression, IReadOnlyList<string> onceLocal, DateTimeZone zone,
+        DateTime afterUtc, int ordinal, DateTime? beforeUtc = null)
+    {
+        if (ordinal < 1)
+            throw new ArgumentOutOfRangeException(nameof(ordinal));
+        var boundary = EnsureUtc(afterUtc);
+        if (beforeUtc is not null && beforeUtc <= boundary)
+            return null;
+        var explicitDates = ResolveExplicitUtc(onceLocal, zone)
+            .Where(t => t > boundary && (beforeUtc is null || t < beforeUtc)).ToArray();
+        if (cronExpression is null)
+            return ordinal <= explicitDates.Length ? explicitDates[ordinal - 1] : null;
+
+        var cron = NcrontabSchedule.Parse(cronExpression);
+        var startDay = TaskTimezones.ToLocal(boundary, zone).Date;
+        var endDay = beforeUtc is null
+            ? DateTime.MaxValue.Date
+            : TaskTimezones.ToLocal(EnsureUtc(beforeUtc.Value), zone).Date;
+        var perDay = cron.HourValues.Count * cron.MinuteValues.Count * cron.SecondValues.Count;
+        if (ordinal > ((long)(endDay - startDay).TotalDays + 1) * perDay + explicitDates.Length)
+            return null;
+        var explicitByDay = explicitDates.ToLookup(t => TaskTimezones.ToLocal(t, zone).Date);
+        var lastOccurrenceDay = startDay;
+        for (var day = startDay; ; day = day.AddDays(1))
+        {
+            // Execution stops searching cron after the per-occurrence horizon.
+            // A later explicit date can still bridge that gap and resume cron.
+            if ((day - lastOccurrenceDay).TotalDays > MaxSearchDays)
+            {
+                var bridge = explicitDates.FirstOrDefault(t => TaskTimezones.ToLocal(t, zone).Date >= day);
+                if (bridge == default)
+                    return null;
+                return ordinal == 1 ? bridge : GetNthMergedUtc(
+                    cronExpression, onceLocal, zone, bridge, ordinal - 1, beforeUtc);
+            }
+            var matches = cron.MatchesLocalDay(day.Month, day.Day, day.DayOfWeek);
+            if (matches && day != startDay && day != endDay && !explicitByDay.Contains(day))
+            {
+                var midnight = zone.MapLocal(LocalDateTime.FromDateTime(day));
+                if (midnight.Count == 1)
+                {
+                    var instant = midnight.Single().ToInstant();
+                    if (zone.GetZoneInterval(instant).Equals(
+                        zone.GetZoneInterval(instant + Duration.FromDays(1))) && ordinal > perDay)
+                    {
+                        ordinal -= perDay;
+                        lastOccurrenceDay = day;
+                        continue;
+                    }
+                }
+            }
+
+            var candidates = new SortedSet<DateTime>(explicitByDay[day]);
+            if (matches)
+                candidates.UnionWith(DayCandidatesUtc(cron, zone, day));
+            foreach (var candidate in candidates)
+            {
+                if (candidate > boundary && (beforeUtc is null || candidate < beforeUtc))
+                {
+                    lastOccurrenceDay = day;
+                    if (--ordinal == 0)
+                        return candidate;
+                }
+            }
+            if (day == endDay)
+                return null;
+        }
+    }
+
     // Latest merged instant in (waterlineUtc, nowUtc].
     public static DateTime? GetLatestDueMergedUtc(
         string? cronExpression, IReadOnlyList<string> onceLocal, DateTimeZone zone,
@@ -146,10 +220,10 @@ public static class TaskScheduleResolver
                         continue;
                     }
 
-                    DateTime candidate;
+                    Instant candidate;
                     try
                     {
-                        candidate = local.InZoneStrictly(zone).ToDateTimeUtc();
+                        candidate = local.InZoneStrictly(zone).ToInstant();
                     }
                     catch (SkippedTimeException)
                     {
@@ -161,10 +235,12 @@ public static class TaskScheduleResolver
                         // DST fold: run once at the earlier UTC instant.
                         candidate = zone.ResolveLocal(local, Resolvers.CreateMappingResolver(
                                 Resolvers.ReturnEarlier, Resolvers.ThrowWhenSkipped))
-                            .ToDateTimeUtc();
+                            .ToInstant();
                     }
 
-                    yield return candidate;
+                    if (candidate >= Instant.FromDateTimeUtc(DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc)) &&
+                        candidate <= Instant.FromDateTimeUtc(DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc)))
+                        yield return candidate.ToDateTimeUtc();
                 }
             }
         }

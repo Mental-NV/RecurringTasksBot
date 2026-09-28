@@ -236,7 +236,7 @@ public sealed class TaskCommandTests
         Assert.Equal(new DateTime(2026, 1, 2, 6, 0, 0, DateTimeKind.Utc), rows[0].NextUtc);
         var text = TaskListFormatter.FormatPage(rows, 1, now, compact: false);
         Assert.Contains("Europe/Moscow", text);
-        Assert.Contains("ID | Status | Next | Prompt", text);
+        Assert.Contains("ID | Status | Next | Expire | Prompt", text);
     }
 
     [Fact]

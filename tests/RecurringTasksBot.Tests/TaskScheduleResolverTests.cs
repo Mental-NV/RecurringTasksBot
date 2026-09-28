@@ -144,4 +144,56 @@ public sealed class TaskScheduleResolverTests
         var next = Next("0 0 9 5 * *", "UTC", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
         Assert.Equal(new DateTime(2026, 1, 5, 9, 0, 0, DateTimeKind.Utc), next);
     }
+
+    [Theory]
+    [InlineData("Europe/Moscow", "0 0 9 * * *", "2026-01-01T00:00:00Z")]
+    [InlineData("Europe/Berlin", "0 30 2 * * *", "2026-03-27T00:00:00Z")]
+    [InlineData("Europe/Berlin", "0 30 2 * * *", "2026-10-23T00:00:00Z")]
+    [InlineData("Asia/Kathmandu", "0 0 9 * * *", "2026-01-01T00:00:00Z")]
+    [InlineData("UTC", "0 0 9 29 2 *", "2026-01-01T00:00:00Z")]
+    public void NthMerged_MatchesRepeatedResolutionAcrossCalendarAndDstBoundaries(
+        string zoneId, string cron, string start)
+    {
+        var after = DateTime.Parse(start, null, System.Globalization.DateTimeStyles.AdjustToUniversal);
+        var expected = after;
+        for (var ordinal = 1; ordinal <= 5; ordinal++)
+        {
+            expected = TaskScheduleResolver.GetNextMergedUtc(cron, [], Zone(zoneId), expected)!.Value;
+            Assert.Equal(expected,
+                TaskScheduleResolver.GetNthMergedUtc(cron, [], Zone(zoneId), after, ordinal));
+        }
+    }
+
+    [Fact]
+    public void NthMerged_DeduplicatesExplicitDatesAndHonorsExclusiveExpiration()
+    {
+        var after = new DateTime(2026, 1, 1, 8, 0, 0, DateTimeKind.Utc);
+        string[] once = ["2026-01-01T09:00:00", "2026-01-01T10:00:00"];
+        var expected = after.Date.AddDays(1).AddHours(9);
+        Assert.Equal(expected, TaskScheduleResolver.GetNthMergedUtc(
+            "0 0 9 * * *", once, Zone("UTC"), after, 3));
+        Assert.Null(TaskScheduleResolver.GetNthMergedUtc(
+            "0 0 9 * * *", once, Zone("UTC"), after, 3, expected));
+    }
+
+    [Fact]
+    public void NthMerged_LargeCountsSkipWholeDaysAndUnrepresentableDatesReturnNull()
+    {
+        var after = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        Assert.Equal(after.AddMinutes(1_000_000), TaskScheduleResolver.GetNthMergedUtc(
+            "0 * * * * *", [], Zone("Europe/Moscow"), after, 1_000_000));
+        Assert.Null(TaskScheduleResolver.GetNthMergedUtc(
+            "0 0 9 * * *", [], Zone("UTC"), after, int.MaxValue));
+    }
+
+    [Fact]
+    public void NthMerged_RespectsCronSearchHorizonAndExplicitDatesCanBridgeIt()
+    {
+        var after = new DateTime(2095, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string cron = "0 0 9 29 2 *";
+        // The eight-year leap-day gap around 2100 exceeds the execution horizon.
+        Assert.Null(TaskScheduleResolver.GetNthMergedUtc(cron, [], Zone("UTC"), after, 2));
+        Assert.Equal(new DateTime(2104, 2, 29, 9, 0, 0, DateTimeKind.Utc),
+            TaskScheduleResolver.GetNthMergedUtc(cron, ["2101-01-01T09:00:00"], Zone("UTC"), after, 3));
+    }
 }

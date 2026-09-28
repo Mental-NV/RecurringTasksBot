@@ -29,6 +29,7 @@ public sealed record TaskListRow(
     string IdPrefix,
     string Status,
     DateTime? NextUtc,
+    DateTime? ExpiresUtc,
     string PromptPreview,
     string Timezone);
 
@@ -63,6 +64,7 @@ public static class TaskListBuilder
                     prefixes[record.TaskId],
                     DisplayStatus(item, next),
                     next,
+                    ComputeExpiration(item, nowUtc),
                     PromptPreview(record.Definition.Prompt ?? string.Empty),
                     record.Definition.Timezone);
             })
@@ -125,6 +127,51 @@ public static class TaskListBuilder
         }
 
         return candidate;
+    }
+
+    // Count limits reserve a slot at claim time. Project only the remaining
+    // slots, excluding retained work even when its lease is retrying or stale.
+    // Like Next, this is a schedule preview; future delays can move it.
+    public static DateTime? ComputeExpiration(TaskListItem item, DateTime nowUtc)
+    {
+        var record = item.Record;
+        var deadline = record.ExpiresAtUtc;
+        var max = record.Definition.Parameters.MaxOccurrences;
+        if (max is null)
+            return deadline;
+        var remaining = max.Value - record.StartedOccurrences;
+        if (remaining <= 0)
+        {
+            var closed = record.CountClosedAtUtc ?? record.StopReasonAtUtc ??
+                record.ActiveClaim?.ClaimedAtUtc ?? record.UpdatedAtUtc;
+            return deadline is null || closed < deadline.Value ? closed : deadline;
+        }
+        if (record.Status != TaskState.Active || (deadline is not null && deadline <= nowUtc) ||
+            !TaskTimezones.TryResolve(record.Definition.Timezone, out var zone) || zone is null)
+            return deadline;
+
+        var lower = record.WaterlineUtc;
+        if (record.ActiveClaim is not null)
+            lower = Max(lower, record.ActiveClaim.ScheduledUtc);
+        if (item.ClaimedUtc is not null)
+            lower = Max(lower, item.ClaimedUtc.Value);
+        if (record.PendingActivationUtc is not null)
+            lower = Max(lower, record.PendingActivationUtc.Value);
+        if (item.ActivationBoundaryUtc is not null)
+            lower = Max(lower, item.ActivationBoundaryUtc.Value);
+
+        var schedule = record.Definition.Schedule;
+        var due = TaskScheduleResolver.GetLatestDueMergedUtc(
+            schedule.Cron, schedule.Once, zone, nowUtc, lower);
+        if (due is not null && (deadline is null || due < deadline))
+        {
+            // Only the latest missed occurrence consumes a slot, at admission now.
+            if (--remaining == 0)
+                return nowUtc;
+        }
+        var projected = TaskScheduleResolver.GetNthMergedUtc(
+            schedule.Cron, schedule.Once, zone, Max(lower, nowUtc), remaining, deadline);
+        return projected ?? deadline;
     }
 
     // Durable running-awareness for one claimed task, derived from
@@ -201,12 +248,13 @@ public static class TaskListFormatter
             {
                 var currentYear = group.Any() ? CurrentLocalYear(group.Key, nowUtc) : nowUtc.Year;
                 writer.WriteStartArray();
-                WriteCell(writer, $"{group.Key} ({currentYear})", colspan: 4);
+                WriteCell(writer, $"{group.Key} ({currentYear})", colspan: 5);
                 writer.WriteEndArray();
                 writer.WriteStartArray();
                 WriteCell(writer, "ID", isHeader: true);
                 WriteCell(writer, "Status", isHeader: true);
                 WriteCell(writer, "Next", isHeader: true);
+                WriteCell(writer, "Expire", isHeader: true);
                 WriteCell(writer, "Prompt", isHeader: true);
                 writer.WriteEndArray();
                 foreach (var row in group)
@@ -218,6 +266,9 @@ public static class TaskListFormatter
                     WriteCell(writer, row.IdPrefix);
                     WriteCell(writer, row.Status);
                     WriteCell(writer, next);
+                    WriteCell(writer, row.ExpiresUtc is null
+                        ? "—"
+                        : FormatInstant(row.ExpiresUtc.Value, row.Timezone, currentYear));
                     WriteCell(writer, row.PromptPreview);
                     writer.WriteEndArray();
                 }
@@ -256,16 +307,20 @@ public static class TaskListFormatter
             var currentYear = group.Any() ? CurrentLocalYear(group.Key, nowUtc) : nowUtc.Year;
             output.AppendLine($"{group.Key} ({currentYear})");
             if (!compact)
-                output.AppendLine("ID | Status | Next | Prompt");
+                output.AppendLine("ID | Status | Next | Expire | Prompt");
             foreach (var row in group)
             {
                 var next = row.NextUtc is null
                     ? "—"
                     : FormatInstant(row.NextUtc.Value, row.Timezone, currentYear);
+                var expire = row.ExpiresUtc is null
+                    ? "—"
+                    : FormatInstant(row.ExpiresUtc.Value, row.Timezone, currentYear);
                 if (compact)
-                    output.AppendLine($"{row.IdPrefix} · {row.Status}").AppendLine($"Next {next} · {row.PromptPreview}");
+                    output.AppendLine($"{row.IdPrefix} · {row.Status}")
+                        .AppendLine($"Next {next} · Expire {expire} · {row.PromptPreview}");
                 else
-                    output.AppendLine($"{row.IdPrefix} | {row.Status} | {next} | {row.PromptPreview}");
+                    output.AppendLine($"{row.IdPrefix} | {row.Status} | {next} | {expire} | {row.PromptPreview}");
             }
         }
 

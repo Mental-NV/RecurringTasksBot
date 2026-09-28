@@ -38,8 +38,13 @@ it, and an already-claimed occurrence keeps its frozen settings.
 
 ## `/list [page] [compact]`
 
-Lists your tasks with ID prefixes, statuses, next occurrences, and
-prompt previews — ten per page, grouped by timezone. The default
+Lists your tasks with `ID`, `Status`, `Next`, `Expire`, and `Prompt`
+columns — ten per page, grouped by timezone. `Expire` shows the earlier
+of `expiresAt` and the projected time when `maxOccurrences` is reached,
+in the task's timezone. The count projection uses remaining slots and the
+current schedule; future delays or schedule edits can change it. A reached
+count uses its recorded closure time. `—` means no applicable expiration
+date (including a count the remaining schedule cannot reach). The default
 rendering sends a native table with stacked text as the fallback;
 `compact` sends the stacked text only.
 
