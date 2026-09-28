@@ -5,24 +5,30 @@
 One anonymous HTTP trigger: `POST /api/webhook` (`WebhookFunction`).
 The `X-Telegram-Bot-Api-Secret-Token` header is compared in constant
 time before the body is read or parsed; authenticated malformed payloads
-are acknowledged without retry. Durable functions use
-responsibility-based names (`DurableNames` in `RecurrenceFunctions.cs`):
-orchestrator `RecurrenceLifecycle`, activities `LoadOperation` and
-`DeliverOccurrence`. Renaming a function invalidates in-flight
-histories; old live instances are not supported.
+are acknowledged without retry. Durable functions use responsibility-based names. The current task
+lifecycle (`TaskLifecycleNames` in `TaskLifecycleFunctions.cs`) is
+orchestrator `TaskLifecycle` with activities `PlanTask`, `ClaimTask`,
+`RunTask`, `CompleteTask`, and `FinishTask`. The retained legacy
+functions (`DurableNames` in `RecurrenceFunctions.cs`) are orchestrator
+`RecurrenceLifecycle` with activities `LoadOperation` and
+`DeliverOccurrence`, operating on `operation_` rows — not on tasks.
+Renaming a function invalidates in-flight histories; old live instances
+are not supported.
 
 ## DI lifecycle
 
-`Program.cs` registers normal dependencies once as singletons: execution
-and provider options (validated), table storage and Telegram options,
-table clients, repository/store implementations, typed HTTP clients for
-the Telegram transport and the LLM. `ExecuteOccurrenceHandler` is built
-with real services and `TimeProvider.System`. The `DurableTaskClient`
-exists per invocation, so the recurrence adapter is created through the
-registered `Func<DurableTaskClient, IOrchestrationClient>` factory —
-no service location, no manual graph reconstruction.
+`FunctionAppServices.AddFunctionAppServices` (called by `Program.cs`
+and by the host tests) registers normal dependencies once as
+singletons: execution and provider options (validated), table storage
+and Telegram options, table clients, repository/store implementations,
+typed HTTP clients for the Telegram transport and the LLM.
+`ExecuteOccurrenceHandler` is built with real services and
+`TimeProvider.System`. The `DurableTaskClient` exists per invocation,
+so the recurrence adapter is created through the registered
+`Func<DurableTaskClient, ITaskOrchestrationClient>` factory — no
+service location, no manual graph reconstruction.
 
-## Recurrence state and continuation
+## Recurrence state and continuation (legacy operations path)
 
 One `RecurrenceState` shape (`Scheduler.cs`) serves as initial input and
 `ContinueAsNew` payload: instance/operation/owner IDs, cron expression,

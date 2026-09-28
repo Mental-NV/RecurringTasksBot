@@ -2,69 +2,6 @@ using RecurringTasksBot.Application;
 
 namespace RecurringTasksBot.Tests;
 
-public sealed class FailureReportingTests
-{
-    [Fact]
-    public void ActiveWithRunningOrchestration_ListsActive()
-    {
-        var (status, summary) = FailureReporter.ResolveListStatus(
-            TestRecords.Operation("u", "op", OperationStatus.Active), "Running");
-        Assert.Equal(OperationStatus.Active, status);
-        Assert.Equal("failed", summary); // default when no detail stored
-    }
-
-    [Fact]
-    public void OrchestrationFailure_SurfacesAsFailed()
-    {
-        var op = TestRecords.Operation("u", "op", OperationStatus.Active)
-            with { FailureSummary = "delivery failed: timeout" };
-        var (status, summary) = FailureReporter.ResolveListStatus(op, "Failed");
-        Assert.Equal(OperationStatus.Failed, status);
-        Assert.Equal("delivery failed: timeout", summary);
-    }
-
-    [Fact]
-    public void TerminatedOrchestration_SurfacesAsFailed()
-    {
-        var (status, _) = FailureReporter.ResolveListStatus(
-            TestRecords.Operation("u", "op", OperationStatus.Active), "Terminated");
-        Assert.Equal(OperationStatus.Failed, status);
-    }
-
-    [Fact]
-    public void StoredFailed_StaysFailed_RegardlessOfRuntime()
-    {
-        var op = TestRecords.Operation("u", "op", OperationStatus.Failed)
-            with { FailureSummary = "permanent recipient failure: blocked" };
-        var (status, summary) = FailureReporter.ResolveListStatus(op, "Running");
-        Assert.Equal(OperationStatus.Failed, status);
-        Assert.Contains("blocked", summary);
-    }
-
-    [Fact]
-    public void StoredDeleted_StaysDeleted()
-    {
-        var (status, _) = FailureReporter.ResolveListStatus(
-            TestRecords.Operation("u", "op", OperationStatus.Deleted), "Failed");
-        Assert.Equal(OperationStatus.Deleted, status);
-    }
-
-    [Fact]
-    public void Summary_IsTruncatedToShortError()
-    {
-        var long_ = new string('e', 500);
-        var summary = FailureReporter.Summarise(long_);
-        Assert.Equal(280, summary.Length);
-    }
-
-    [Fact]
-    public void Summary_EmptyDetail_FallsBack()
-    {
-        Assert.Equal("failed", FailureReporter.Summarise(null));
-        Assert.Equal("failed", FailureReporter.Summarise("   "));
-    }
-}
-
 public sealed class OwnershipTests
 {
     [Fact]

@@ -1,41 +1,65 @@
 # Telegram commands
 
-All schedules are UTC. The bot answers in the same private chat.
+Tasks are JSON. The bot answers in the same private chat. All schedules
+resolve in the task's IANA timezone (default UTC, immutable after
+creation).
 
-## `/create <sec min hour day month weekday> <prompt>`
+## `/create <JSON object>`
 
-Six-field NCRONTAB, seconds fixed to `0`, with a future occurrence
-required. Prompt text is 1–32,768 Unicode scalar characters; spaces and
-line breaks are preserved. Oversized or empty prompts are rejected, never
-truncated. Example:
+Fields: `prompt` (required, 1–32,768 Unicode scalars), `schedule.cron`
+and/or `schedule.once` (at least one, with a future occurrence),
+`timezone`, `parameters.memoryMode` / `reasoningEffort` / `webSearch` /
+`expiresAt` / `maxOccurrences`. Example:
 
 ```
-/create 0 0 9 * * * Summarize today's AI news
+/create {"prompt": "Summarize today's AI news", "schedule": {"cron": "0 0 9 * * *"}, "timezone": "Europe/Moscow"}
 ```
 
-Reply to a long message with `/create <schedule>` to use the replied-to
-message as the prompt. Rich content (formatting, lists, tables, links) is
-normalized to prompt text preserving reading order.
+Reply to a long message with `/create {"schedule": {...}}` to use the
+replied-to message as the prompt. Rich content (formatting, lists,
+tables, links) is normalized to prompt text preserving reading order.
 
-Creating stores the operation (schedule + prompt) and starts one
-`RecurrenceLifecycle` orchestration. The stored text becomes the prompt
-for every future occurrence.
+Creating stores a `task_` row and starts one `TaskLifecycle`
+orchestration. The confirmation shows the task ID/revision, limits,
+and the next occurrences in local time with the UTC instant alongside.
 
-## `/list`
+## `/get <task-id> [explicit|effective]`
 
-Lists your operations with their IDs, schedules, and status.
+Shows saved settings (`explicit`, the default) or settings with
+defaults applied (`effective`).
 
-## `/delete <id>`
+## `/update <task-id> <JSON patch object>`
 
-Tombstones the operation and stops its orchestration. Tombstoned
-operations are removed with their memory and artifacts by
-[operator cleanup](Runbook.md); the operation row is deleted last.
+Changes only the supplied fields. A patch that changes nothing
+answers `unchanged` and preserves the revision; otherwise the revision
+bumps by one. Only schedule or limit changes signal the orchestration
+to replan (and ensure it is running) — prompt-only edits do not wake
+it, and an already-claimed occurrence keeps its frozen settings.
+
+## `/list [page] [compact]`
+
+Lists your tasks with ID prefixes, statuses, next occurrences, and
+prompt previews — ten per page, grouped by timezone. The default
+rendering sends a native table with stacked text as the fallback;
+`compact` sends the stacked text only.
+
+Statuses: `active`, `executing`, `retrying`, `recovering`,
+`completed`, `failed`. `unknown` means the task is active but its
+orchestration health could not be confirmed (no readable runtime
+status); `failed` means the orchestration confirmedly failed.
+
+## `/delete <task-id>`
+
+Tombstones the task and stops its orchestration (tombstone first,
+termination best-effort). Deleted tasks disappear from `/list`; their
+memory and retained rows are removed last by
+[operator cleanup](Runbook.md).
 
 ## Unknown or invalid input
 
-Unknown verbs, invalid schedules, and missing arguments answer with usage
-text that discloses the external LLM/search processing. Nothing is
-stored for invalid input.
+Unknown verbs, invalid JSON, bad schedules, and missing arguments
+answer with usage text that discloses the external LLM/search
+processing. Nothing is stored for invalid input.
 
 ## Receipts and redelivery
 

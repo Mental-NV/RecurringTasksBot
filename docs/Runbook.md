@@ -21,7 +21,7 @@ reply-source canary (`replySource=llm-authored|literal|
 failure-notice-literal` with provider, model, receipt schema) answers
 whether delivered text was LLM-authored or a fallback.
 
-## Failed or stranded starts
+## Failed or stranded starts (legacy operations only)
 
 ```sh
 ./scripts/operator-recover.sh recover [--stale-minutes 15] [--apply]
@@ -34,6 +34,11 @@ reschedule. `restart`
 tombstones a `failed` operation (cause must already be resolved) so the
 original `/create` safely recreates it. Orchestration startup itself
 resumes through Telegram redelivery of stable operation IDs.
+
+These commands select `operation_<id>` rows only. They do not recover
+Phase 5 tasks: `task_` rows and `TaskLifecycle` orchestrations are
+never selected, and running one against a task ID is a no-op for that
+task.
 
 ## Delivery and LLM failures
 
@@ -72,6 +77,8 @@ operations 90d, terminal orchestration history 90d, retry-dedup guard
 
 ## Restart recovery
 
-After host downtime the orchestration delivers at most one late
-occurrence per operation, then resumes schedule. No operator action is
-needed; use `recover` only for operations stuck in `starting`.
+After host downtime the legacy recurrence orchestration delivers at
+most one late occurrence per operation, then resumes schedule. Task
+lifecycles replan from stored waterlines on wake. No operator action
+is needed; use `recover` only for legacy operations stuck in
+`starting`.

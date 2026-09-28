@@ -9,33 +9,44 @@ FunctionApp -> Infrastructure
 
 - `RecurringTasksBot.Application` references nothing else. It owns
   scheduling, command handling, generation/delivery decisions, storage
-  abstractions (`IOperationStore`, `IOccurrenceRepository`,
-  `IUpdateReceiptStore`), and the `ITelegramTransport` / `ILlmExecutor`
-  contracts. Enforced by `ProjectBoundaryTests`.
+  abstractions (`ITaskStore`, `IOperationStore`, `IOccurrenceRepository`,
+  `IUpdateReceiptStore`), the orchestration clients
+  (`IOrchestrationClient`, `ITaskOrchestrationClient`), and the
+  `ITelegramTransport` / `ILlmExecutor` contracts. Enforced by
+  `ProjectBoundaryTests`.
 - `RecurringTasksBot.Infrastructure` references Application. It owns the
   Telegram transport, the OpenRouter adapter, Azure Tables persistence,
   and configuration loading.
 - `RecurringTasksBot.FunctionApp` references both. It owns the HTTP
   webhook, the Durable orchestration/activities, and the DI composition
-  root (`Program.cs`). No business logic lives here beyond translating
-  binding DTOs and mapping outcomes.
+  root (`Program.cs` via `FunctionAppServices.AddFunctionAppServices`,
+  shared with the host tests). No business logic lives here beyond
+  translating binding DTOs and mapping outcomes.
 
 ## Runtime flow
 
 1. Telegram posts an update to `POST /api/webhook`. `WebhookFunction`
    validates the secret header first, then parses the body.
-2. `UpdateDispatcher` (Application) routes `/create`, `/list`, `/delete`,
-   or usage text. Command receipts dedupe Telegram redeliveries.
-3. `/create` stores the operation and starts one `RecurrenceLifecycle`
-   orchestration per operation via `IOrchestrationClient`.
-4. The orchestration computes the first due time once, then loops: Durable
-   timer, `DeliverOccurrence` activity, `ContinueAsNew` with the advanced
-   scheduling state.
-5. The activity runs `ExecuteOccurrenceHandler.ExecuteAttemptAsync`: claim
-   the occurrence lease, build the frozen context, call the LLM once,
-   persist answer + delivery plan atomically, execute the plan over the
-   typed transport, publish completion. Orchestration-level timers drive
-   retries; the activity only reports the outcome.
+2. `UpdateDispatcher` (Application) routes the JSON task commands
+   `/create`, `/get`, `/update`, `/list`, `/delete`, or usage text.
+   Command receipts dedupe Telegram redeliveries.
+3. `/create` stores a `task_` row and starts one `TaskLifecycle`
+   orchestration per task via `ITaskOrchestrationClient`.
+4. The orchestration loops through activities: `PlanTask` (planner
+   decision), `ClaimTask` (reserve the latest due occurrence),
+   `RunTask` (execute via `TaskOccurrenceRunner`), `CompleteTask`
+   (commit + stop reason). Waits use Durable timers that update
+   signals wake early; `FinishTask` stops the loop and `ContinueAsNew`
+   bounds history while keeping the instance ID.
+5. The run activity claims the occurrence lease, builds the frozen
+   context, calls the LLM once, persists answer + delivery plan
+   atomically, executes the plan over the typed transport, and
+   publishes completion. Orchestration-level timers drive retries;
+   the activity only reports the outcome.
+
+The retained `RecurrenceFunctions` (`RecurrenceLifecycle` /
+`LoadOperation` / `DeliverOccurrence`) drive the legacy
+`operation_`-row lifecycle, not tasks. See [FunctionApp](FunctionApp.md).
 
 ## Responsibility boundaries
 
@@ -70,8 +81,9 @@ FunctionApp -> Infrastructure
 
 Implement `ILlmExecutor.ExecuteAsync`: serialize `LlmRequest.Messages`
 verbatim, enforce `MaxSourceScalars` while accumulating streamed content,
-and map failures to `LlmFailureKind`. Register it in `Program.cs` next
-to `OpenRouterLlmExecutor`. Scheduling, storage, and Telegram behavior
+and map failures to `LlmFailureKind`. Register it in
+`FunctionAppServices.AddFunctionAppServices` next to
+`OpenRouterLlmExecutor`. Scheduling, storage, and Telegram behavior
 do not change.
 
 ## Non-goals

@@ -35,7 +35,7 @@ copying configuration tables or procedures.
 
 - [Backlog](Backlog.md) — open scale/security questions and future ideas.
 - [History](History/README.md) — frozen historical specs (not current
-  guidance). The consolidation plan is `Spec.Phase4.md` in this folder.
+  guidance), including the completed `Spec.Phase5.md`.
 
 ## Authority and maintenance
 
