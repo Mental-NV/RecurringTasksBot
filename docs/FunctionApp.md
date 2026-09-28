@@ -5,15 +5,19 @@
 One anonymous HTTP trigger: `POST /api/webhook` (`WebhookFunction`).
 The `X-Telegram-Bot-Api-Secret-Token` header is compared in constant
 time before the body is read or parsed; authenticated malformed payloads
-are acknowledged without retry. Durable functions use responsibility-based names. The current task
-lifecycle (`TaskLifecycleNames` in `TaskLifecycleFunctions.cs`) is
-orchestrator `TaskLifecycle` with activities `PlanTask`, `ClaimTask`,
-`RunTask`, `CompleteTask`, and `FinishTask`. The retained legacy
-functions (`DurableNames` in `RecurrenceFunctions.cs`) are orchestrator
-`RecurrenceLifecycle` with activities `LoadOperation` and
-`DeliverOccurrence`, operating on `operation_` rows — not on tasks.
+are acknowledged without retry. Seven functions share one responsibility-based naming scheme
+(`TaskLifecycleNames` in `TaskLifecycleFunctions.cs`, plus the
+`Webhook` HTTP trigger): orchestrator `TaskLifecycle` with activities
+`PlanTask`, `ClaimTask`, `RunTask`, `CompleteTask`, and `FinishTask`.
 Renaming a function invalidates in-flight histories; old live instances
-are not supported.
+are not supported. The generated catalog is pinned by the host tests.
+
+No functions remain for the legacy `operation_`-row lifecycle.
+`TableOperationStore`, `OperationRowCodec`, and the legacy operator
+scripts remain for existing operation data. The occurrence repository
+still contains legacy operation-row lookups. Shared occurrence codecs
+remain part of live task execution: they persist and read receipts,
+frozen contexts, answers, delivery plans, and memory.
 
 ## DI lifecycle
 
@@ -28,24 +32,24 @@ so the recurrence adapter is created through the registered
 `Func<DurableTaskClient, ITaskOrchestrationClient>` factory — no
 service location, no manual graph reconstruction.
 
-## Recurrence state and continuation (legacy operations path)
+## Task lifecycle passes and continuation
 
-One `RecurrenceState` shape (`Scheduler.cs`) serves as initial input and
-`ContinueAsNew` payload: instance/operation/owner IDs, cron expression,
-nullable `NextScheduledUtc`, occurrence index. Null marks a new
-operation: only the first invocation loads the operation and computes
-the first due time (strictly after activation); continuations consume
-persisted state. Each loop delivers at most one late occurrence after
-downtime (`Scheduler.SingleCatchUp`), advances, and continues as new to
-bound history while keeping the instance ID.
+One `TaskLifecycleInput` (owner + task IDs) starts the orchestration.
+Each pass plans from fresh storage state: start the latest due
+occurrence (latest-only catch-up after downtime), claim and run it,
+commit the waterline, and wait on a Durable timer that update signals
+wake early. After `MaxPassesPerExecution` passes the orchestration
+continues as new with the same input to bound history while keeping
+the instance ID.
 
 ## Activity outcomes and retries
 
-`DeliverOccurrence` returns `SingleAttemptResult`: `Sent`,
-`SkippedStopped`, `SkippedDuplicate`, `NeedRetry`, `OccurrenceFailed`,
+`RunTask` returns `SingleAttemptResult`: `Sent`, `SkippedStopped`,
+`SkippedDuplicate`, `NeedRetry`, `OccurrenceFailed`,
 `OperationFailed`, `WaitingForClaim`. `NeedRetry` waits use Durable
 timers (`RetryIn`, default 30s) with `AttemptIndex` advanced only for
-work retries. Terminal failure or a stopped operation ends the
+work retries. Claim waits (`WaitingForClaim`) back off without
+consuming that budget. Terminal failure or a stopped task ends the
 orchestration; future occurrences otherwise stay scheduled.
 
 ## Timeouts and determinism

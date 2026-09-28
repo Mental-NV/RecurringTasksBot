@@ -44,7 +44,6 @@ public static class FunctionAppServices
         services.AddSingleton(taskDefaults);
         services.AddSingleton<TableClients>();
         services.AddSingleton<IOccurrenceRepository, TableOccurrenceRepository>();
-        services.AddSingleton<IOperationStore, TableOperationStore>();
         services.AddSingleton<ITaskStore, TableTaskStore>();
         services.AddSingleton<ITaskOccurrenceRunner>(p =>
             new TaskOccurrenceRunner(
@@ -72,17 +71,6 @@ public static class FunctionAppServices
                 llmApiKey));
         services.AddSingleton<ILlmExecutor>(p =>
             p.GetRequiredService<OpenRouterLlmExecutor>());
-        services.AddSingleton<ExecuteOccurrenceHandler>(p =>
-            new ExecuteOccurrenceHandler(
-                p.GetRequiredService<IOperationStore>(),
-                p.GetRequiredService<IOccurrenceRepository>(),
-                p.GetRequiredService<ITelegramTransport>(),
-                p.GetRequiredService<ILlmExecutor>(),
-                execution,
-                provider.Provider,
-                provider.Model,
-                TimeProvider.System,
-                logger: p.GetRequiredService<ILogger<ExecuteOccurrenceHandler>>()));
         // The Durable client exists only per invocation, so the
         // recurrence adapter is created through this small explicit
         // factory instead of constructor injection.

@@ -34,14 +34,8 @@ public sealed class ReceiptTests
     }
 
     [Fact]
-    public void PreUpgradeState_Deserializes()
+    public void ShortReceiptConstruction_DefaultsCounters()
         {
-        // Phase-one orchestration state and receipts carry no new fields.
-        var stateJson = """{"InstanceId":"recurring-x","OperationId":"x","OwnerId":"1","CronExpression":"0 0 9 * * *","NextScheduledUtc":"2026-01-06T09:00:00Z","OccurrenceIndex":3}""";
-        var state = JsonSerializer.Deserialize<RecurrenceState>(stateJson);
-        Assert.NotNull(state);
-        Assert.Equal(3, state!.OccurrenceIndex);
-
         // Old short receipt construction still compiles and behaves.
         var receipt = new DeliveryReceipt("o", "op", DateTime.UtcNow, "sent", 1, null);
         Assert.Equal(0, receipt.GenerationAttempts);

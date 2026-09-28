@@ -38,15 +38,17 @@ FunctionApp -> Infrastructure
    (commit + stop reason). Waits use Durable timers that update
    signals wake early; `FinishTask` stops the loop and `ContinueAsNew`
    bounds history while keeping the instance ID.
-5. The run activity claims the occurrence lease, builds the frozen
-   context, calls the LLM once, persists answer + delivery plan
-   atomically, executes the plan over the typed transport, and
+5. The run activity (`TaskOccurrenceRunner`, composing the shared
+   `ExecuteOccurrenceHandler`) claims the occurrence lease, builds
+   the frozen context, calls the LLM once, persists answer + delivery
+   plan atomically, executes the plan over the typed transport, and
    publishes completion. Orchestration-level timers drive retries;
    the activity only reports the outcome.
 
-The retained `RecurrenceFunctions` (`RecurrenceLifecycle` /
-`LoadOperation` / `DeliverOccurrence`) drive the legacy
-`operation_`-row lifecycle, not tasks. See [FunctionApp](FunctionApp.md).
+No functions operate on the legacy `operation_`-row lifecycle
+anymore; its storage readers (`TableOperationStore`,
+`OperationRowCodec`, occurrence codecs) and the operator scripts
+remain for the retained data. See [FunctionApp](FunctionApp.md).
 
 ## Responsibility boundaries
 

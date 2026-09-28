@@ -104,28 +104,6 @@ public sealed class DurableOrchestrationClient(DurableTaskClient client)
         }
     }
 
-    public async Task StartAsync(string instanceId, string operationId, string ownerId,
-        CancellationToken ct = default)
-    {
-        try
-        {
-            await client.ScheduleNewOrchestrationInstanceAsync(
-                DurableNames.Orchestrator,
-                new RecurrenceState(
-                    instanceId, operationId, ownerId, string.Empty, null, 0),
-                new StartOrchestrationOptions { InstanceId = instanceId },
-                ct);
-        }
-        catch (Exception ex) when (IsAlreadyRunning(ex))
-        {
-            return;
-        }
-        catch (Exception ex) when (IsTransient(ex))
-        {
-            throw new TransientStoreException($"start orchestration {instanceId}: {ex.Message}", ex);
-        }
-    }
-
     public async Task TerminateAsync(string instanceId, CancellationToken ct = default)
     {
         try

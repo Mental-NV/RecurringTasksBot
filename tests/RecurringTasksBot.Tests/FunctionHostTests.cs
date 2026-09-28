@@ -92,9 +92,6 @@ public sealed class FunctionHostTests
         // contract: such edits must update this baseline deliberately.
         var expected = new Dictionary<string, string>
         {
-            ["RecurrenceLifecycle"] = "RecurringTasksBot.FunctionApp.RecurrenceFunctions.Run",
-            ["LoadOperation"] = "RecurringTasksBot.FunctionApp.RecurrenceFunctions.Load",
-            ["DeliverOccurrence"] = "RecurringTasksBot.FunctionApp.RecurrenceFunctions.Deliver",
             ["TaskLifecycle"] = "RecurringTasksBot.FunctionApp.TaskLifecycleFunctions.RunLifecycleAsync",
             ["PlanTask"] = "RecurringTasksBot.FunctionApp.TaskLifecycleFunctions.Plan",
             ["ClaimTask"] = "RecurringTasksBot.FunctionApp.TaskLifecycleFunctions.Claim",

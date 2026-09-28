@@ -13,7 +13,7 @@ public sealed class ProjectBoundaryTests
 {
     private static readonly Assembly Application = typeof(OperationRecord).Assembly;
     private static readonly Assembly Infrastructure = typeof(TelegramBotSender).Assembly;
-    private static readonly Assembly Host = typeof(RecurrenceFunctions).Assembly;
+    private static readonly Assembly Host = typeof(TaskLifecycleFunctions).Assembly;
 
     [Fact]
     public void Application_ReferencesNeitherInfrastructureNorHost()

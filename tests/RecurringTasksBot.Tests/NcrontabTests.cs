@@ -23,16 +23,6 @@ public sealed class NcrontabTests
     }
 
     [Fact]
-    public void FirstAfterActivation_IsStrictlyAfterActivation()
-    {
-        var s = NcrontabSchedule.Parse("0 0 9 * * *");
-        Assert.Equal(Dt(2026, 1, 6, 9, 0),
-            Scheduler.FirstAfterActivation(s, Dt(2026, 1, 5, 9, 0)));
-        Assert.Equal(Dt(2026, 1, 5, 9, 0),
-            Scheduler.FirstAfterActivation(s, Dt(2026, 1, 5, 8, 59, 59)));
-    }
-
-    [Fact]
     public void WeeklyMonday()
     {
         var s = NcrontabSchedule.Parse("0 30 8 * * MON");

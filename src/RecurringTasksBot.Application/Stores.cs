@@ -39,8 +39,6 @@ public interface ITelegramTransport
 
 public interface IOrchestrationClient
 {
-    // Durably accepts startup; throwing TransientStoreException signals retryable failure.
-    Task StartAsync(string instanceId, string operationId, string ownerId, CancellationToken ct = default);
     Task TerminateAsync(string instanceId, CancellationToken ct = default);
     Task<string?> GetRuntimeStatusAsync(string instanceId, CancellationToken ct = default);
     Task PurgeHistoryAsync(string instanceId, CancellationToken ct = default);

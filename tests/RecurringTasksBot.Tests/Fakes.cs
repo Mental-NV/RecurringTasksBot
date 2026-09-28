@@ -585,20 +585,9 @@ public static class TestLlm
 public sealed class FakeOrchestrations : IOrchestrationClient, ITaskOrchestrationClient
 {
     private readonly HashSet<string> _started = new();
-    public List<string> StartedInstances { get; } = new();
     public List<string> StartedTaskInstances { get; } = new();
     public List<string> SignaledInstances { get; } = new();
     public List<string> TerminatedInstances { get; } = new();
-    public Func<string, Task>? OnStart { get; set; }
-
-    public Task StartAsync(string instanceId, string operationId, string ownerId, CancellationToken ct = default)
-    {
-        if (OnStart is not null)
-            return OnStart(instanceId);
-        _started.Add(instanceId);
-        StartedInstances.Add(instanceId);
-        return Task.CompletedTask;
-    }
 
     public Task StartTaskAsync(string instanceId, string ownerId, string taskId,
         CancellationToken ct = default)
