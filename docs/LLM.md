@@ -16,10 +16,17 @@ Built by `ExecutionMessageBuilder.BuildMessages`
   metadata), `assistant` (previous answer), `user` (current envelope).
 
 The system instruction is `RecurringTaskSystemPrompt.Render`
-(`Application/ExecutionContext.cs`): template `recurring-task-v1` plus
+(`Application/ExecutionContext.cs`): template `recurring-task-v2` plus
 the operator `Llm:SystemInstruction` suffix. The effective instruction,
 model, declared context, and memory mode are frozen into the persisted
 context row at generation time, so retries reuse the identical snapshot.
+
+The current envelope supplies the task's IANA timezone in
+`execution_context.schedule_timezone`. Context timestamps remain UTC; the
+system instruction requires conversion to that timezone for displayed dates
+and times, including references to previous occurrences and relative dates
+such as "today". Conversion uses the offset at each instant, including daylight
+saving time and calendar date changes, unless the task requests another timezone.
 
 ## Memory selection
 

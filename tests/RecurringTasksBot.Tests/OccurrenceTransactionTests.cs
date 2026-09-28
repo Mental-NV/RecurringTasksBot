@@ -87,7 +87,7 @@ public sealed class OccurrenceTransactionTests
         Assert.Equal((string)context["ContextVersion"]!, parsed.ContextVersion);
         Assert.True(parsed.ContextInitialized);
         Assert.Equal(1, parsed.PayloadSchemaVersion);
-        Assert.Equal("recurring-task-v1", parsed.InstructionVersion);
+        Assert.Equal("recurring-task-v2", parsed.InstructionVersion);
 
         var fence = ActionEntity(built.Actions, 2, TableTransactionActionType.UpdateMerge);
         Assert.Equal(new ETag("etag-op"), fence.ETag);

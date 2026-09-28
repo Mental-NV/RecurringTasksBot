@@ -23,7 +23,7 @@ public static class ExecutionLimits
     public const int AnswerSourceMaxScalars = 131072;
     public const int SystemInstructionMaxScalars = 16384;
     public const int MaxPlanLeaves = 128;
-    public const string InstructionVersion = "recurring-task-v1";
+    public const string InstructionVersion = "recurring-task-v2";
     public const string ScheduleTimezone = "UTC";
     public const string EnabledCapabilities = "rich_text, formulas, details, links, unicode_symbols";
 

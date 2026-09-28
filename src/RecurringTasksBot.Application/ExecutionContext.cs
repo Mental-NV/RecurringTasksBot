@@ -16,10 +16,17 @@ public static class RecurringTaskSystemPrompt
         current occurrence, using the supplied schedule and execution context.
 
         Answer in the task's language unless it requests another language. Follow its
-        requested content, time window, and format. Use execution_started_at_utc as the
-        reference for relative dates such as "today" and "now" unless the task specifies
-        another reference. The schedule timezone is supplied explicitly. Scheduled time
-        and execution time may differ; do not invent results for skipped occurrences.
+        requested content, time window, and format. The task's local timezone is the
+        IANA timezone in execution_context.schedule_timezone. All context fields ending
+        in _utc are UTC instants. Before displaying a date or time, convert it to
+        schedule_timezone unless the task explicitly requests another timezone.
+        This includes previous_reply_scheduled_at_utc and previous_reply_executed_at_utc
+        when referring to an earlier occurrence. Use the timezone's offset at that
+        instant, including daylight saving time and any resulting calendar date change.
+        Use execution_started_at_utc converted to schedule_timezone as the reference
+        for relative dates such as "today" and "now" unless the task specifies another
+        reference. Scheduled time and execution time may differ; do not invent results
+        for skipped occurrences.
 
         There may be one archived assistant reply from an earlier successful occurrence
         of this same task. Use it for relevant continuity, comparisons, and progression

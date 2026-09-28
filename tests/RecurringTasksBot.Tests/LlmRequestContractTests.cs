@@ -12,15 +12,29 @@ public sealed class LlmRequestContractTests
 {
     private static readonly DateTime Day = new(2026, 9, 25, 9, 0, 0, DateTimeKind.Utc);
 
-    [Fact]
-    public async Task FrozenMessagesAndBound_TravelInOneRequest_RetriesReuseSnapshot()
+    [Theory]
+    [InlineData("UTC", false)]
+    [InlineData("Europe/Moscow", true)]
+    [InlineData("Europe/Berlin", true)]
+    [InlineData("UTC", true)]
+    public async Task FrozenMessagesAndBound_TravelInOneRequest_RetriesReuseSnapshot(
+        string timezone, bool withMemory)
     {
         var ops = new FakeOperationStore();
         var sender = new FakeTelegramSender();
         var llm = new FakeLlmExecutor();
         var clock = new FakeClock { Now = new DateTimeOffset(Day, TimeSpan.Zero) };
-        ops.Seed(TestRecords.Operation("u1", "op1"));
+        ops.Seed(TestRecords.Operation("u1", "op1") with { ScheduleTimezone = timezone });
         var repo = new FakeOccurrenceRepository(ops, clock);
+        var previousScheduled = Day.AddDays(-1).Date.AddHours(22);
+        var previousExecuted = previousScheduled.AddSeconds(5);
+        const string previousAnswer = "Previous result";
+        if (withMemory)
+        {
+            var answer = AnswerArtifact.Create("previous", AnswerKind.Answer, previousAnswer);
+            repo.SeedMemory(new MemoryRecord("u1", "op1", previousScheduled, previousExecuted,
+                clock.Now, answer.AnswerVersion, answer.Text, answer.SourceSha256, answer.ScalarCount));
+        }
         var handler = new ExecuteOccurrenceHandler(ops, repo, sender, llm,
             TestLlm.Execution(), TestLlm.ProviderName, TestLlm.ModelName, clock);
 
@@ -45,7 +59,29 @@ public sealed class LlmRequestContractTests
         // Retries reuse the frozen snapshot values, rebuilt from the
         // persisted context: identical roles and content.
         Assert.Equal(llm.Requests[0].Messages, llm.Requests[1].Messages);
-        Assert.Equal(["system", "user"], llm.Requests[0].Messages.Select(m => m.Role));
+        var messages = llm.Requests[0].Messages;
+        Assert.Equal(withMemory ? ["system", "user", "assistant", "user"] : new[] { "system", "user" },
+            messages.Select(m => m.Role));
+        Assert.Contains("execution_context.schedule_timezone", messages[0].Content);
+        Assert.Contains("convert it to\nschedule_timezone", messages[0].Content);
+        Assert.Contains("previous_reply_scheduled_at_utc and previous_reply_executed_at_utc", messages[0].Content);
+        Assert.Contains("execution_started_at_utc converted to schedule_timezone", messages[0].Content);
+        using var envelope = JsonDocument.Parse(messages[^1].Content);
+        var context = envelope.RootElement.GetProperty("execution_context");
+        Assert.Equal(timezone, context.GetProperty("schedule_timezone").GetString());
+        Assert.Equal("recurring-task-v2", context.GetProperty("instruction_version").GetString());
+        if (withMemory)
+        {
+            Assert.Equal(previousAnswer, messages[2].Content);
+            using var archived = JsonDocument.Parse(messages[1].Content);
+            foreach (var metadata in new[] { archived.RootElement, context })
+            {
+                Assert.Equal(ExecutionMessageBuilder.ToIso8601(previousScheduled),
+                    metadata.GetProperty("previous_reply_scheduled_at_utc").GetString());
+                Assert.Equal(ExecutionMessageBuilder.ToIso8601(previousExecuted),
+                    metadata.GetProperty("previous_reply_executed_at_utc").GetString());
+            }
+        }
     }
 
     private static (string Instruction, ExecutionContextSnapshot Snapshot) Snapshot(bool withMemory)

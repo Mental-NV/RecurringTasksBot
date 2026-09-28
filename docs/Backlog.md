@@ -15,6 +15,7 @@
 - [ ] [Security] Check user ownership (permission) when delete a recurring task
 - [ ] [Security] Authentication though JWT tokens for external clients (CLI, Web UI)
 - [ ] [Architecture] Hexagon architecute (ports, adapters) with different clients (Telegram Bot, Web UI, CLI)
+- [ ] [Quality] E2E testing in CI/CD pipeline with real telegram bot and test_orchestrator_bot
 - [x] More rich ability to set recurring task:
   - [x] one time schedules, up to 10
   - [x] ability to set any timezone, UTC by default
