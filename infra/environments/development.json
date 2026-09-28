@@ -7,6 +7,6 @@
     "region": "switzerlandnorth",
     "storageAccountName": "devrecurringtasksbot"
   },
-  "tableName": "RecurringTaskData",
-  "taskHubName": "RecurringTasksAppDev"
+  "tableName": "RecurringTaskDataV5",
+  "taskHubName": "RecurringTasksV5Dev"
 }

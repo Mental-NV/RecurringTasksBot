@@ -14,6 +14,12 @@ public static class TableRowKeys
 
     public static string Memory(string operationId) => $"memory_{operationId}";
 
+    public static string Task(string taskId) => $"task_{taskId}";
+
+    // One row per applied update command, committed atomically with the
+    // mutation it records so redelivery never re-applies after a crash.
+    public static string TaskCommand(string taskId, long updateId) => $"taskcmd_{taskId}_{updateId}";
+
     public static string Context(string operationId, DateTime scheduledUtc, string contextVersion) =>
         $"delivery_{operationId}_{scheduledUtc.Ticks}__context_{contextVersion}";
 

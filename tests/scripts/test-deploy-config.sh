@@ -36,8 +36,8 @@ echo "PASS: single-flow operator workflow uses vars and a params file"
 # 2. Template statics and placeholders. The template is the single source
 # for production storage/hub/table/bot values: no prod profile may compete.
 py() { python3 -c "import json,sys; print(json.load(open('$TEMPLATE'))['parameters']['$1']['value'])"; }
-[ "$(py tableName)" = "RecurringTaskData" ] || fail "template table wrong"
-[ "$(py taskHubName)" = "RecurringTasksAppProd" ] || fail "template hub wrong"
+[ "$(py tableName)" = "RecurringTaskDataV5" ] || fail "template table wrong"
+[ "$(py taskHubName)" = "RecurringTasksV5Prod" ] || fail "template hub wrong"
 [ "$(py storageAccountName)" = "prodrecurringtasksbot" ] || fail "template storage account wrong"
 [ "$(py expectedBotId)" != "0" ] || fail "template keeps the zero bot-id placeholder"
 [ -e "src/RecurringTasksBot.FunctionApp/appsettings.Production.json" ] \
@@ -75,7 +75,7 @@ assert params["functionAppName"]["value"] == "func-fixture"
 assert params["webhookUrl"]["value"] == "https://func-fixture.azurewebsites.net/api/webhook"
 assert params["storageConnectionString"]["value"] == 'Account=fixture;Key="a\\b;c"'
 assert params["telegramBotToken"]["value"] == "fixture-bot-token"
-assert params["tableName"]["value"] == "RecurringTaskData"
+assert params["tableName"]["value"] == "RecurringTaskDataV5"
 assert not any(v.startswith("__") for p, v in
     ((n, e["value"]) for n, e in params.items()) if isinstance(v, str))
 EOF
@@ -133,12 +133,12 @@ echo "PASS: platform hub matches runtime profile by default and honors overrides
 export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=devrecurringtasksbot;AccountKey=Zm9v;EndpointSuffix=core.windows.net"
 out=$(bash scripts/operator-cleanup.sh --env dev 2>&1) \
   || fail "operator-cleanup --env dev failed"
-echo "$out" | grep -q "Target table: RecurringTaskData; hub: RecurringTasksAppDev (env dev)" \
+echo "$out" | grep -q "Target table: RecurringTaskDataV5; hub: RecurringTasksV5Dev (env dev)" \
   || fail "cleanup dev targets wrong: $out"
 export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=prodrecurringtasksbot;AccountKey=Zm9v;EndpointSuffix=core.windows.net"
 out=$(bash scripts/operator-cleanup.sh --env prod 2>&1) \
   || fail "operator-cleanup --env prod failed"
-echo "$out" | grep -q "Target table: RecurringTaskData; hub: RecurringTasksAppProd (env prod)" \
+echo "$out" | grep -q "Target table: RecurringTaskDataV5; hub: RecurringTasksV5Prod (env prod)" \
   || fail "cleanup prod targets wrong: $out"
 if bash scripts/operator-cleanup.sh --env dev >/dev/null 2>&1; then
   fail "cleanup --env dev with prod credentials should refuse"
@@ -173,6 +173,6 @@ fi
 export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=prodrecurringtasksbot;AccountKey=Zm9v;EndpointSuffix=core.windows.net"
 out=$(PATH="$SHIM:/usr/bin:/bin" bash scripts/operator-recover.sh recover --env prod 2>&1) \
   || fail "operator-recover --env prod failed"
-echo "$out" | grep -q "Target table: RecurringTaskData (env prod)" \
+echo "$out" | grep -q "Target table: RecurringTaskDataV5 (env prod)" \
   || fail "recover prod target wrong: $out"
 echo "PASS: operator scripts resolve targets and guard credentials"

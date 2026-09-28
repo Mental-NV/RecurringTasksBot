@@ -169,13 +169,25 @@ public sealed class NcrontabSchedule
         throw new NcrontabParseException($"Invalid value '{token}'.");
     }
 
-    private bool MatchesDay(DateTime day)
+    public IReadOnlyList<int> HourValues => _hours;
+
+    public IReadOnlyList<int> MinuteValues => _minutes;
+
+    public IReadOnlyList<int> SecondValues => _seconds;
+
+    private bool MatchesDay(DateTime day) =>
+        MatchesLocalDay(day.Month, day.Day, day.DayOfWeek);
+
+    // Local calendar day match for the timezone-aware resolver: month must
+    // always match; with both day fields restricted either may match (OR),
+    // with one restricted it alone controls, with neither every day matches.
+    public bool MatchesLocalDay(int month, int day, DayOfWeek dayOfWeek)
     {
-        if (!_months.Contains(day.Month))
+        if (!_months.Contains(month))
             return false;
 
-        var dom = _daysOfMonth.Contains(day.Day);
-        var dow = _daysOfWeek.Contains((int)day.DayOfWeek);
+        var dom = _daysOfMonth.Contains(day);
+        var dow = _daysOfWeek.Contains((int)dayOfWeek);
         if (_domRestricted && _dowRestricted)
             return dom || dow;
         if (_domRestricted)

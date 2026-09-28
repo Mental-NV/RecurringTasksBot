@@ -194,27 +194,47 @@ public static class ExecutionMessageBuilder
     public static IReadOnlyList<ChatMessage> BuildMessages(
         string effectiveSystemInstruction,
         ExecutionContextSnapshot snapshot,
-        string? previousReplyAnswer)
+        string? previousReplyAnswer,
+        bool searchEnabled = true)
     {
+        IReadOnlyList<ChatMessage> messages;
         if (previousReplyAnswer is null)
         {
             if (snapshot.PreviousReplyPresent)
                 throw new ArgumentException("Snapshot declares a previous reply but no answer was supplied.");
-            return
+            messages =
             [
                 new ChatMessage("system", effectiveSystemInstruction),
                 new ChatMessage("user", BuildCurrentEnvelope(snapshot)),
             ];
         }
-        if (!snapshot.PreviousReplyPresent)
-            throw new ArgumentException("A previous answer was supplied but the snapshot declares none.");
-        return
-        [
-            new ChatMessage("system", effectiveSystemInstruction),
-            new ChatMessage("user", BuildArchivedMetadata(snapshot)),
-            new ChatMessage("assistant", previousReplyAnswer),
-            new ChatMessage("user", BuildCurrentEnvelope(snapshot)),
-        ];
+        else
+        {
+            if (!snapshot.PreviousReplyPresent)
+                throw new ArgumentException("A previous answer was supplied but the snapshot declares none.");
+            messages =
+            [
+                new ChatMessage("system", effectiveSystemInstruction),
+                new ChatMessage("user", BuildArchivedMetadata(snapshot)),
+                new ChatMessage("assistant", previousReplyAnswer),
+                new ChatMessage("user", BuildCurrentEnvelope(snapshot)),
+            ];
+        }
+
+        // Disabled search adjusts instructions: the frozen system prompt
+        // invites web research, so the current envelope must retract it.
+        if (!searchEnabled)
+        {
+            var adjusted = messages.Take(messages.Count - 1).ToList();
+            var last = messages[messages.Count - 1];
+            adjusted.Add(last with { Content = last.Content +
+                "\n\nWeb search is disabled for this occurrence: answer from model " +
+                "knowledge without searching. Say briefly when current facts " +
+                "cannot be verified." });
+            messages = adjusted;
+        }
+
+        return messages;
     }
 }
 

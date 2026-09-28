@@ -16,7 +16,8 @@ internal sealed class OccurrenceGenerator(
 {
     public async Task<(FrozenContextRecord? Context, SingleAttemptResult? Failure)> InitializeAsync(
         OperationRecord op, string claimId, DateTime scheduledUtc, DateTime executionStarted,
-        string? adminInstruction, int attemptIndex, CancellationToken ct)
+        string? adminInstruction, int attemptIndex, CancellationToken ct,
+        OccurrenceGenerationOverrides? overrides = null)
     {
         try
         {
@@ -25,7 +26,8 @@ internal sealed class OccurrenceGenerator(
             var init = await occurrences.InitializeContextAsync(new FrozenContextRequest(
                 op.OwnerId, op.OperationId, scheduledUtc, claimId,
                 new FrozenContextInputs(instruction, options.TargetAnswerTextChars,
-                    TelegramLimits.RichTextChars, options.MemoryMode, executionStarted)), ct);
+                    TelegramLimits.RichTextChars,
+                    overrides?.MemoryMode ?? options.MemoryMode, executionStarted)), ct);
             return (init.Context, null);
         }
         catch (TransientStoreException ex) { return (null, AttemptResults.StorageRetry(attemptIndex, ex.Message)); }
@@ -41,12 +43,13 @@ internal sealed class OccurrenceGenerator(
     public async Task<SingleAttemptResult?> GenerateAsync(
         OperationRecord op, FrozenContextRecord context, string claimId, DateTime scheduledUtc,
         DateTime executionStarted, int attemptIndex, int attempts,
-        DateTimeOffset workStart, CancellationToken ct)
+        DateTimeOffset workStart, CancellationToken ct,
+        OccurrenceGenerationOverrides? overrides = null)
     {
         var ownerId = op.OwnerId;
         var operationId = op.OperationId;
         string? previous = context.PreviousReplyPresent &&
-            context.MemoryMode.Equals(ExecutionOptions.PreviousSuccessfulReply, StringComparison.Ordinal)
+            IsPreviousReplyMode(context.MemoryMode)
             ? context.PreviousReplyAnswer
             : null;
         var snapshot = previous is null && context.PreviousReplyPresent
@@ -57,8 +60,9 @@ internal sealed class OccurrenceGenerator(
                 PreviousReplyExecutedAtUtc = null,
             }
             : context.ToSnapshot();
+        var searchEnabled = overrides?.SearchEnabled ?? true;
         var messages = ExecutionMessageBuilder.BuildMessages(
-            context.EffectiveSystemInstruction, snapshot, previous);
+            context.EffectiveSystemInstruction, snapshot, previous, searchEnabled);
         if (!ContextBudget.FitsBudget(messages, options, options.CompletionTokenBudget))
             return await PersistNoticeAsync(op, claimId, scheduledUtc, executionStarted,
                 attemptIndex, attempts, OccurrenceFailureCodes.ContextBudgetExceeded, ct, workStart);
@@ -71,7 +75,8 @@ internal sealed class OccurrenceGenerator(
         try
         {
             result = await generation.ExecuteAsync(
-                new LlmRequest(messages, options.MaxAnswerSourceChars), ct);
+                new LlmRequest(messages, options.MaxAnswerSourceChars,
+                    overrides?.ReasoningEffort, overrides?.SearchEnabled), ct);
         }
         catch (LlmExecutionException ex) when (ex.Kind is LlmFailureKind.Transient or LlmFailureKind.EmptyResponse)
         {
@@ -143,6 +148,12 @@ internal sealed class OccurrenceGenerator(
         }
         return null;
     }
+
+    // Both the legacy token and the Phase 5 task token enable previous-reply
+    // memory; anything else omits it from model input.
+    private static bool IsPreviousReplyMode(string memoryMode) =>
+        memoryMode.Equals(ExecutionOptions.PreviousSuccessfulReply, StringComparison.Ordinal) ||
+        memoryMode.Equals(TaskMemoryModes.IncludePreviousMessage, StringComparison.Ordinal);
 
     // Tracks one generation failure. Returns a failure result for
     // storage/claim/corruption outcomes, otherwise null with the new

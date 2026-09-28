@@ -59,7 +59,7 @@ if [ -n "$ENV_NAME" ]; then
     *) echo "Unknown --env '$ENV_NAME' (expected dev|prod)" >&2; exit 2 ;;
   esac
 fi
-[ -z "$TABLE" ] && TABLE="RecurringTaskData"
+[ -z "$TABLE" ] && TABLE="RecurringTaskDataV5"
 if [ "$HISTORY_DAYS" -gt 0 ] && [ -z "$HUB" ]; then
   echo "History purge needs a task hub: pass --env dev|prod or --hub NAME." >&2
   exit 2
@@ -175,8 +175,8 @@ for (pk, parent), rows in sorted(groups.items()):
             print(f"  would delete terminal occurrence: {pk} {parent} "
                 f"(+{len(children)} artifacts)")
         continue
-    # No parent receipt: orphan artifacts. Require no live operation
-    # publication and a 24-hour age grace before deletion.
+    # No parent receipt: orphan artifacts. Require no live operation or
+    # task publication and a 24-hour age grace before deletion.
     tail = parent[len("delivery_"):] if parent.startswith("delivery_") else ""
     op_id = tail.rsplit("_", 1)[0] if "_" in tail else ""
     if not op_id:
@@ -184,6 +184,9 @@ for (pk, parent), rows in sorted(groups.items()):
         continue
     if get_row(pk, f"operation_{op_id}") is not None:
         print(f"  keep orphan with live operation: {pk} {parent}")
+        continue
+    if get_row(pk, f"task_{op_id}") is not None:
+        print(f"  keep orphan with live task: {pk} {parent}")
         continue
     if any(r.get("Timestamp", "") >= orphan_grace for r in rows):
         print(f"  keep young orphan: {pk} {parent}")
@@ -244,6 +247,39 @@ for t in sorted(tombs, key=lambda x: (x["PartitionKey"], x["RowKey"])):
             delete(pk, rk)
     else:
         print(f"  would delete tombstoned operation: {pk} {op_id} ({len(ordered)} rows)")
+
+# Phase 5 tasks keep no operation_ rows: tombstoned task_ rows carry the
+# same delivery_/memory_ children keyed by task ID. The task row goes last.
+task_tombs = query(f"Status eq 'deleted' and Timestamp lt datetime'{cutoff}' and "
+    "(RowKey ge 'task_' and RowKey lt 'task`')")
+for t in sorted(task_tombs, key=lambda x: (x["PartitionKey"], x["RowKey"])):
+    pk, task_row = t["PartitionKey"], t["RowKey"]
+    if not task_row.startswith("task_"):
+        continue
+    task_id = task_row[len("task_"):]
+    # Recheck the tombstone before destructive batches (retry/interruption safe).
+    current = query(f"PartitionKey eq '{pk}' and RowKey eq '{task_row}'")
+    if not current or current[0].get("Status") != "deleted":
+        print(f"  skip resurrected task: {pk} {task_id}")
+        continue
+    owned = query(f"PartitionKey eq '{pk}' and RowKey ge 'delivery_{task_id}_' "
+        f"and RowKey lt 'delivery_{task_id}_`'", select="PartitionKey,RowKey")
+    mem = query(f"PartitionKey eq '{pk}' and RowKey eq 'memory_{task_id}'",
+        select="PartitionKey,RowKey")
+    # Deduplication command rows share the task ID prefix scheme
+    # (taskcmd_<id>_<update>), outside the task_ range filter above.
+    cmds = query(f"PartitionKey eq '{pk}' and RowKey ge 'taskcmd_{task_id}_' "
+        f"and RowKey lt 'taskcmd_{task_id}_`'", select="PartitionKey,RowKey")
+    # Memory and artifacts first, the task row last.
+    task_ordered = ([r["RowKey"] for r in mem] +
+        sorted(r["RowKey"] for r in owned if "__" in r["RowKey"]) +
+        sorted(r["RowKey"] for r in owned if "__" not in r["RowKey"]) +
+        sorted(r["RowKey"] for r in cmds) + [task_row])
+    if apply:
+        for rk in task_ordered:
+            delete(pk, rk)
+    else:
+        print(f"  would delete tombstoned task: {pk} {task_id} ({len(task_ordered)} rows)")
 PYEOF
 fi
 

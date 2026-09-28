@@ -247,7 +247,7 @@ public sealed class FakeOccurrenceRepository(
             var eligible = memory is not null && UtcTime.Utc(memory.SourceScheduledUtc) < scheduled;
             var context = new FrozenContextRecord(
                 ArtifactVersion.New(), request.OwnerId, request.OperationId, scheduled,
-                op.Text, op.CronExpression,
+                op.Text, op.CronExpression, op.ScheduleTimezone,
                 ExecutionMessageBuilder.OccurrenceIdFor(request.OperationId, scheduled),
                 ExecutionMessageBuilder.ToIso8601(scheduled),
                 ExecutionMessageBuilder.ToIso8601(request.Inputs.ExecutionStartedUtc),
@@ -582,10 +582,12 @@ public static class TestLlm
         MaxTotalResults: 10);
 }
 
-public sealed class FakeOrchestrations : IOrchestrationClient
+public sealed class FakeOrchestrations : IOrchestrationClient, ITaskOrchestrationClient
 {
     private readonly HashSet<string> _started = new();
     public List<string> StartedInstances { get; } = new();
+    public List<string> StartedTaskInstances { get; } = new();
+    public List<string> SignaledInstances { get; } = new();
     public List<string> TerminatedInstances { get; } = new();
     public Func<string, Task>? OnStart { get; set; }
 
@@ -598,6 +600,25 @@ public sealed class FakeOrchestrations : IOrchestrationClient
         return Task.CompletedTask;
     }
 
+    public Task StartTaskAsync(string instanceId, string ownerId, string taskId,
+        CancellationToken ct = default)
+    {
+        // Duplicate starts are durable successes, not second lifecycles.
+        if (_started.Add(instanceId))
+            StartedTaskInstances.Add(instanceId);
+        return Task.CompletedTask;
+    }
+
+    public Func<string, Task>? OnSignal { get; set; }
+
+    public Task SignalTaskUpdatedAsync(string instanceId, CancellationToken ct = default)
+    {
+        if (OnSignal is not null)
+            return OnSignal(instanceId);
+        SignaledInstances.Add(instanceId);
+        return Task.CompletedTask;
+    }
+
     public Task TerminateAsync(string instanceId, CancellationToken ct = default)
     {
         TerminatedInstances.Add(instanceId);
@@ -605,8 +626,12 @@ public sealed class FakeOrchestrations : IOrchestrationClient
         return Task.CompletedTask;
     }
 
+    private readonly HashSet<string> _failed = new();
+    public void MarkFailed(string instanceId) => _failed.Add(instanceId);
+
     public Task<string?> GetRuntimeStatusAsync(string instanceId, CancellationToken ct = default) =>
-        Task.FromResult<string?>(_started.Contains(instanceId) ? "Running" : null);
+        Task.FromResult<string?>(_failed.Contains(instanceId) ? "Failed" :
+            _started.Contains(instanceId) ? "Running" : null);
 
     public Task PurgeHistoryAsync(string instanceId, CancellationToken ct = default) =>
         Task.CompletedTask;
@@ -616,7 +641,7 @@ public sealed class FakeTelegramSender : ITelegramTransport
 {
     private readonly Queue<Func<long, string, Task<long>>> _script = new();
     public Exception? AlwaysThrow { get; set; }
-    public List<(long ChatId, TelegramPayloadKind Kind, string Content)> Payloads { get; } = new();
+    public List<(long ChatId, TelegramPayloadKind Kind, string Content, string? FileName, string? Caption)> Payloads { get; } = new();
     public Func<TelegramPayload, Exception?>? RejectPayload { get; set; }
     private long _nextId = 900;
 
@@ -628,7 +653,7 @@ public sealed class FakeTelegramSender : ITelegramTransport
             return Task.FromException<long>(AlwaysThrow);
         if (_script.Count > 0)
             return _script.Dequeue()(chatId, payload.Content);
-        Payloads.Add((chatId, payload.Kind, payload.Content));
+        Payloads.Add((chatId, payload.Kind, payload.Content, payload.FileName, payload.Caption));
         if (RejectPayload?.Invoke(payload) is { } ex)
             return Task.FromException<long>(ex);
         return Task.FromResult(Interlocked.Increment(ref _nextId));
@@ -641,6 +666,242 @@ public sealed class FakeTelegramSender : ITelegramTransport
         _script.Enqueue((_, _) => Task.FromResult(messageId));
 }
 
+public sealed class FakeTaskStore : ITaskStore
+{
+    private readonly Dictionary<(string Owner, string Id), TaskRecord> _tasks = new();
+
+    public Task<TaskRecord?> GetAsync(string ownerId, string taskId, CancellationToken ct = default)
+    {
+        _tasks.TryGetValue((ownerId, taskId), out var record);
+        return Task.FromResult(record);
+    }
+
+    public Task InsertAsync(TaskRecord record, CancellationToken ct = default)
+    {
+        if (_tasks.ContainsKey((record.OwnerId, record.TaskId)))
+            throw new ConcurrencyConflictException("task exists");
+        _tasks[(record.OwnerId, record.TaskId)] = record;
+        return Task.CompletedTask;
+    }
+
+    private static DateTime MaxWaterline(DateTime a, DateTime b) => a >= b ? a : b;
+
+    private static (DateTime Waterline, DateTime? Pending) UpdateBoundaries(
+        TaskRecord record, bool admitFutureWork, DateTime updatedAtUtc)
+    {
+        var boundary = admitFutureWork
+            ? MaxWaterline(record.WaterlineUtc, updatedAtUtc)
+            : record.WaterlineUtc;
+        if (record.ActiveClaim is null)
+            return (boundary, null);
+        var pending = record.PendingActivationUtc;
+        if (admitFutureWork && (pending is null || boundary > pending.Value))
+            pending = boundary;
+        return (record.WaterlineUtc, pending);
+    }
+
+    private readonly Dictionary<(string Owner, string Task, long Update), TaskAppliedCommand>
+        _commands = new();
+
+    public Task<TaskAppliedCommand?> GetAppliedCommandAsync(string ownerId, string taskId,
+        long updateId, CancellationToken ct = default)
+    {
+        _commands.TryGetValue((ownerId, taskId, updateId), out var command);
+        return Task.FromResult(command);
+    }
+
+    public Task<bool> TryUpdateDefinitionAsync(string ownerId, string taskId, int expectedRevision,
+        TaskState expectedStatus, TaskDefinition definition, int nextRevision,
+        DateTime? expiresAtUtc, bool admitFutureWork, long appliedUpdateId,
+        DateTime updatedAtUtc, CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record) ||
+            record.Revision != expectedRevision ||
+            record.Status != expectedStatus ||
+            _commands.ContainsKey((ownerId, taskId, appliedUpdateId)))
+            return Task.FromResult(false);
+        var (waterline, pending) = UpdateBoundaries(record, admitFutureWork, updatedAtUtc);
+        var updateMax = definition.Parameters.MaxOccurrences;
+        var updateFilled = updateMax is not null && updateMax.Value <= record.StartedOccurrences;
+        _tasks[(ownerId, taskId)] = record with
+        {
+            Definition = definition,
+            Revision = nextRevision,
+            ExpiresAtUtc = expiresAtUtc,
+            WaterlineUtc = waterline,
+            PendingActivationUtc = pending,
+            LastAppliedUpdateId = appliedUpdateId,
+            CountClosedAtUtc = updateFilled ? record.CountClosedAtUtc ?? updatedAtUtc : null,
+            UpdatedAtUtc = updatedAtUtc,
+        };
+        _commands[(ownerId, taskId, appliedUpdateId)] = new TaskAppliedCommand(
+            ownerId, appliedUpdateId, taskId, nextRevision, updatedAtUtc);
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> TryReactivateTaskAsync(string ownerId, string taskId, int expectedRevision,
+        TaskDefinition definition, int nextRevision, DateTime? expiresAtUtc,
+        long appliedUpdateId, DateTime updatedAtUtc, CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record) ||
+            record.Revision != expectedRevision ||
+            record.Status != TaskState.Completed ||
+            _commands.ContainsKey((ownerId, taskId, appliedUpdateId)))
+            return Task.FromResult(false);
+        var reactivateMax = definition.Parameters.MaxOccurrences;
+        _tasks[(ownerId, taskId)] = record with
+        {
+            Definition = definition,
+            Revision = nextRevision,
+            Status = TaskState.Active,
+            StopReason = null,
+            StopReasonAtUtc = null,
+            PendingActivationUtc = null,
+            ExpiresAtUtc = expiresAtUtc,
+            WaterlineUtc = MaxWaterline(record.WaterlineUtc, updatedAtUtc),
+            LastAppliedUpdateId = appliedUpdateId,
+            CountClosedAtUtc = reactivateMax is not null &&
+                reactivateMax.Value <= record.StartedOccurrences
+                ? updatedAtUtc
+                : null,
+            UpdatedAtUtc = updatedAtUtc,
+        };
+        _commands[(ownerId, taskId, appliedUpdateId)] = new TaskAppliedCommand(
+            ownerId, appliedUpdateId, taskId, nextRevision, updatedAtUtc);
+        return Task.FromResult(true);
+    }
+
+    public Task<IReadOnlyList<TaskRecord>> ListOwnedAsync(string ownerId, CancellationToken ct = default)
+    {
+        IReadOnlyList<TaskRecord> result = _tasks.Values
+            .Where(t => t.OwnerId == ownerId && t.Status != TaskState.Deleted)
+            .ToList();
+        return Task.FromResult(result);
+    }
+
+    public Task<bool> TryMarkDeletedAsync(string ownerId, string taskId, DateTime updatedAtUtc,
+        CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record))
+            return Task.FromResult(false);
+        if (record.Status == TaskState.Deleted)
+            return Task.FromResult(true);
+        _tasks[(ownerId, taskId)] = record with { Status = TaskState.Deleted, UpdatedAtUtc = updatedAtUtc };
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> TryMarkTaskFailedAsync(string ownerId, string taskId, DateTime updatedAtUtc,
+        CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record) ||
+            record.Status != TaskState.Active)
+            return Task.FromResult(false);
+        _tasks[(ownerId, taskId)] = record with { Status = TaskState.Failed, UpdatedAtUtc = updatedAtUtc };
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> TryFinishTaskAsync(string ownerId, string taskId, int expectedRevision,
+        string stopReason, DateTime stopReasonAtUtc, TaskState status, DateTime updatedAtUtc,
+        CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record) ||
+            record.Revision != expectedRevision ||
+            record.Status != TaskState.Active)
+            return Task.FromResult(false);
+        _tasks[(ownerId, taskId)] = record with
+        {
+            Status = status,
+            StopReason = stopReason,
+            StopReasonAtUtc = stopReasonAtUtc,
+            UpdatedAtUtc = updatedAtUtc,
+        };
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> TryClaimOccurrenceAsync(string ownerId, string taskId, int expectedRevision,
+        OccurrenceClaim claim, int nextStartedCount, DateTime updatedAtUtc,
+        CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record) ||
+            record.Revision != expectedRevision ||
+            record.Status != TaskState.Active ||
+            record.ActiveClaim is not null ||
+            claim.ScheduledUtc <= record.WaterlineUtc ||
+            nextStartedCount != record.StartedOccurrences + 1)
+            return Task.FromResult(false);
+        if (record.ExpiresAtUtc is not null && claim.ScheduledUtc >= record.ExpiresAtUtc.Value)
+            return Task.FromResult(false);
+        if (record.ExpiresAtUtc is not null && updatedAtUtc >= record.ExpiresAtUtc.Value)
+            return Task.FromResult(false);
+        var max = record.Definition.Parameters.MaxOccurrences;
+        if (max is not null && nextStartedCount > max.Value)
+            return Task.FromResult(false);
+        var claimMax = record.Definition.Parameters.MaxOccurrences;
+        _tasks[(ownerId, taskId)] = record with
+        {
+            ActiveClaim = claim,
+            StartedOccurrences = nextStartedCount,
+            CountClosedAtUtc = claimMax is not null && nextStartedCount >= claimMax.Value
+                ? record.CountClosedAtUtc ?? updatedAtUtc
+                : record.CountClosedAtUtc,
+            UpdatedAtUtc = updatedAtUtc,
+        };
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> TryUpdateClaimRetryAsync(string ownerId, string taskId,
+        DateTime claimScheduledUtc, int failedAttempts, DateTime? nextRetryUtc,
+        DateTime updatedAtUtc, CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record) ||
+            record.ActiveClaim?.ScheduledUtc != claimScheduledUtc)
+            return Task.FromResult(false);
+        if (record.ActiveClaim.FailedAttempts == failedAttempts &&
+            record.ActiveClaim.NextRetryUtc == nextRetryUtc)
+            return Task.FromResult(true);
+        _tasks[(ownerId, taskId)] = record with
+        {
+            ActiveClaim = record.ActiveClaim with
+            {
+                FailedAttempts = failedAttempts,
+                NextRetryUtc = nextRetryUtc,
+            },
+            UpdatedAtUtc = updatedAtUtc,
+        };
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> TryCompleteOccurrenceAsync(string ownerId, string taskId,
+        DateTime claimScheduledUtc, int expectedRevision, DateTime newWaterlineUtc,
+        DateTime? pendingActivationUtc, string? stopReason, DateTime? stopReasonAtUtc,
+        TaskState? nextStatus, DateTime updatedAtUtc, CancellationToken ct = default)
+    {
+        if (!_tasks.TryGetValue((ownerId, taskId), out var record) ||
+            record.ActiveClaim?.ScheduledUtc != claimScheduledUtc ||
+            record.Revision != expectedRevision ||
+            record.Status != TaskState.Active)
+            return Task.FromResult(false);
+        var waterline = record.WaterlineUtc;
+        if (newWaterlineUtc > waterline)
+            waterline = newWaterlineUtc;
+        if (pendingActivationUtc is not null && pendingActivationUtc.Value > waterline)
+            waterline = pendingActivationUtc.Value;
+        _tasks[(ownerId, taskId)] = record with
+        {
+            ActiveClaim = null,
+            WaterlineUtc = waterline,
+            PendingActivationUtc = null,
+            StopReason = stopReason ?? record.StopReason,
+            StopReasonAtUtc = stopReasonAtUtc ?? record.StopReasonAtUtc,
+            Status = nextStatus ?? record.Status,
+            UpdatedAtUtc = updatedAtUtc,
+        };
+        return Task.FromResult(true);
+    }
+
+    public void Seed(TaskRecord record) => _tasks[(record.OwnerId, record.TaskId)] = record;
+}
+
 public static class TestRecords
 {
     public static OperationRecord Operation(string owner = "u1", string id = "op1",
@@ -648,6 +909,17 @@ public static class TestRecords
         new(owner, id, 111L, "0 0 9 * * *", "Water the plants", status,
             Ids.DeriveInstanceId(id), null,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+    public static TaskRecord Task(string owner = "u1", string id = "task1",
+        TaskState status = TaskState.Active, string? cron = "0 0 9 * * *",
+        string timezone = "UTC", DateTime? createdAtUtc = null)
+    {
+        var now = createdAtUtc ?? new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var definition = new TaskDefinition("Water the plants",
+            new TaskSchedule(cron, []), timezone, TaskParameters.Empty);
+        return new TaskRecord(owner, id, 111L, Ids.DeriveInstanceId(id), definition,
+            1, status, null, now, 0, null, now, now);
+    }
 }
 
 // Scripted HTTP handler shared by transport tests.

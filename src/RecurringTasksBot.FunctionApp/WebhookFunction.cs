@@ -12,10 +12,12 @@ namespace RecurringTasksBot.FunctionApp;
 
 public sealed class WebhookFunction(
     TelegramOptions options,
-    IOperationStore operations,
+    ITaskStore tasks,
     IUpdateReceiptStore receipts,
     ITelegramTransport transport,
-    Func<DurableTaskClient, IOrchestrationClient> orchestrationClients)
+    TaskDefaults taskDefaults,
+    IOccurrenceRepository occurrences,
+    Func<DurableTaskClient, ITaskOrchestrationClient> orchestrationClients)
 {
     public const string SecretHeader = "X-Telegram-Bot-Api-Secret-Token";
 
@@ -50,7 +52,7 @@ public sealed class WebhookFunction(
             return Status(request, (HttpStatusCode)earlyStatus.Value);
 
         var orchestrations = orchestrationClients(durable);
-        var scoped = new UpdateDispatcher(operations, receipts, orchestrations, transport);
+        var scoped = new UpdateDispatcher(tasks, receipts, orchestrations, transport, taskDefaults, occurrences);
         var result = await scoped.ProcessAsync(secretValid: true, update,
             DateTimeOffset.UtcNow, cancellationToken);
 

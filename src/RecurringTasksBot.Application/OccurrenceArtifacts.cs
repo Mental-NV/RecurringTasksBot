@@ -29,6 +29,7 @@ public sealed record FrozenContextRecord(
     DateTime ScheduledUtc,
     string TaskText,
     string ScheduleCron,
+    string ScheduleTimezone,
     string OccurrenceId,
     string ScheduledAtUtc,
     string ExecutionStartedAtUtc,
@@ -46,7 +47,7 @@ public sealed record FrozenContextRecord(
     DateTimeOffset CreatedUtc)
 {
     public ExecutionContextSnapshot ToSnapshot() => new(
-        TaskText, ScheduleCron, ExecutionLimits.ScheduleTimezone,
+        TaskText, ScheduleCron, ScheduleTimezone,
         OccurrenceId, ScheduledAtUtc, ExecutionStartedAtUtc,
         PreviousReplyPresent,
         PreviousReplyScheduledAtUtc, PreviousReplyExecutedAtUtc,

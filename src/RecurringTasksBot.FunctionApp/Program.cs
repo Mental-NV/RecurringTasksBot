@@ -33,6 +33,7 @@ var host = new HostBuilder()
                 "LLM request timeout exceeds the single-activity time budget.");
         var storage = AppConfiguration.ReadTableStorage(config);
         var telegram = AppConfiguration.ReadTelegram(config);
+        var taskDefaults = AppConfiguration.ReadTaskDefaults(config);
 
         // The LLM credential is validated by presence only: values are never
         // printed, and no paid API calls happen at startup or in ordinary CI.
@@ -44,9 +45,22 @@ var host = new HostBuilder()
         services.AddSingleton(provider);
         services.AddSingleton(storage);
         services.AddSingleton(telegram);
+        services.AddSingleton(taskDefaults);
         services.AddSingleton<TableClients>();
         services.AddSingleton<IOccurrenceRepository, TableOccurrenceRepository>();
         services.AddSingleton<IOperationStore, TableOperationStore>();
+        services.AddSingleton<ITaskStore, TableTaskStore>();
+        services.AddSingleton<ITaskOccurrenceRunner>(p =>
+            new TaskOccurrenceRunner(
+                p.GetRequiredService<ITaskStore>(),
+                p.GetRequiredService<IOccurrenceRepository>(),
+                p.GetRequiredService<ITelegramTransport>(),
+                p.GetRequiredService<ILlmExecutor>(),
+                execution,
+                provider.Provider,
+                provider.Model,
+                TimeProvider.System,
+                logger: p.GetRequiredService<ILogger<TaskOccurrenceRunner>>()));
         services.AddSingleton<IUpdateReceiptStore, TableUpdateReceiptStore>();
         services.AddHttpClient<ITelegramTransport, TelegramBotSender>();
         services.AddHttpClient(nameof(ILlmExecutor), client =>
@@ -76,7 +90,7 @@ var host = new HostBuilder()
         // The Durable client exists only per invocation, so the
         // recurrence adapter is created through this small explicit
         // factory instead of constructor injection.
-        services.AddSingleton<Func<DurableTaskClient, IOrchestrationClient>>(
+        services.AddSingleton<Func<DurableTaskClient, ITaskOrchestrationClient>>(
             client => new DurableOrchestrationClient(client));
     })
     .Build();

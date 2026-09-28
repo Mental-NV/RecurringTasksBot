@@ -24,9 +24,20 @@ public sealed record LlmResult(
 // frozen-context message list; the adapter serializes it verbatim without
 // injecting a second system prompt. The answer-source bound travels with
 // the request so streaming readers enforce it while accumulating content.
+// Optional per-request overrides carry a frozen occurrence's effective
+// settings; null means the provider default. The adapter must not override
+// them again from provider configuration.
 public sealed record LlmRequest(
     IReadOnlyList<ChatMessage> Messages,
-    int MaxSourceScalars);
+    int MaxSourceScalars,
+    string? ReasoningEffort = null,
+    bool? SearchEnabled = null);
+
+// Per-occurrence generation overrides resolved from a frozen claim snapshot.
+public sealed record OccurrenceGenerationOverrides(
+    string? MemoryMode = null,
+    string? ReasoningEffort = null,
+    bool? SearchEnabled = null);
 
 public interface ILlmExecutor
 {

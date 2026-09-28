@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
+using NodaTime;
 using RecurringTasksBot.FunctionApp;
 using RecurringTasksBot.Application;
 using RecurringTasksBot.Infrastructure.Bot;
@@ -16,13 +17,13 @@ public sealed class ReviewRegressionTests
     {
         var update = TelegramUpdateParser.Parse("""
             {"update_id":10,"message":{"from":{"id":42},"chat":{"id":42,"type":"private"},
-            "rich_message":{"blocks":[{"type":"paragraph","text":["/cre",{"type":"bold","text":"ate"}," 0 0 9 * * * Brief me"]}]}}}
+            "rich_message":{"blocks":[{"type":"paragraph","text":["/cre",{"type":"bold","text":"ate"}," {\"schedule\": {\"cron\": \"0 0 9 * * *\"}, \"prompt\": \"Brief me\"}"]}]}}}
             """);
-        Assert.Equal("/create 0 0 9 * * * Brief me", update!.Text);
-        var ops = new FakeOperationStore();
-        var processor = new UpdateDispatcher(ops, new FakeReceiptStore(), new FakeOrchestrations(), new FakeTelegramSender());
+        Assert.Equal("/create {\"schedule\": {\"cron\": \"0 0 9 * * *\"}, \"prompt\": \"Brief me\"}", update!.Text);
+        var tasks = new FakeTaskStore();
+        var processor = new UpdateDispatcher(tasks, new FakeReceiptStore(), new FakeOrchestrations(), new FakeTelegramSender(), TaskDefaults.Default, new FakeOccurrenceRepository(new FakeOperationStore(), new FakeClock()));
         Assert.Equal(200, (await processor.ProcessAsync(true, update, DateTimeOffset.UtcNow)).StatusCode);
-        Assert.Equal("Brief me", Assert.Single(await ops.ListOwnedAsync("42")).Text);
+        Assert.Equal("Brief me", Assert.Single(await tasks.ListOwnedAsync("42")).Definition.Prompt);
     }
 
     [Fact]
@@ -34,7 +35,7 @@ public sealed class ReviewRegressionTests
             update_id = 11,
             message = new
             {
-                from = new { id = 42 }, chat = new { id = 42, type = "private" }, text = "/create 0 0 9 * * *",
+                from = new { id = 42 }, chat = new { id = 42, type = "private" }, text = "/create {\"schedule\": {\"cron\": \"0 0 9 * * *\"}}",
                 reply_to_message = new
                 {
                     from = new { id = 42 }, chat = new { id = 42, type = "private" },
@@ -42,11 +43,11 @@ public sealed class ReviewRegressionTests
                 }
             }
         });
-        var ops = new FakeOperationStore();
+        var tasks = new FakeTaskStore();
         var receipts = new FakeReceiptStore();
-        var processor = new UpdateDispatcher(ops, receipts, new FakeOrchestrations(), new FakeTelegramSender());
+        var processor = new UpdateDispatcher(tasks, receipts, new FakeOrchestrations(), new FakeTelegramSender(), TaskDefaults.Default, new FakeOccurrenceRepository(new FakeOperationStore(), new FakeClock()));
         Assert.Equal(200, (await processor.ProcessAsync(true, TelegramUpdateParser.Parse(json), DateTimeOffset.UtcNow)).StatusCode);
-        Assert.Equal(prompt, Assert.Single(await ops.ListOwnedAsync("42")).Text);
+        Assert.Equal(prompt, Assert.Single(await tasks.ListOwnedAsync("42")).Definition.Prompt);
         Assert.True(Encoding.Unicode.GetByteCount((await receipts.GetAsync("42", 11))!.Command) <= 65536);
     }
 
@@ -208,6 +209,17 @@ public sealed class OccurrenceLeaseTests
         };
         Assert.Equal(SingleAttemptOutcome.WaitingForClaim, (await handler.ExecuteAttemptAsync("42", "op1", Scheduled, 0)).Outcome);
         Assert.Empty(sender.Payloads);
+    }
+
+    [Fact]
+    public void ConfirmationInstant_FormatsUtcPortionFromUtc()
+    {
+        // 14:08Z is 17:08 in Moscow (+03:00, no DST): the Z portion must
+        // render the UTC instant, not the local time a second time.
+        var zone = DateTimeZoneProviders.Tzdb["Europe/Moscow"];
+        var line = TaskConfirmationPreview.FormatInstant(
+            new DateTime(2026, 6, 1, 14, 8, 0, DateTimeKind.Utc), zone, "Europe/Moscow");
+        Assert.Equal("01 Jun 17:08 Europe/Moscow (+03:00) / 01 Jun 14:08Z", line);
     }
 
     [Fact]

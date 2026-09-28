@@ -89,6 +89,47 @@ public sealed class TelegramTransportTests
 
 
     [Fact]
+    public async Task TablePayload_SendsOneTableBlock()
+    {
+        var http = new TelegramScriptHandler();
+        const string cells = """[[{"text":"ID","is_header":true}],[{"text":"a31f9c","colspan":2}]]""";
+        var id = await Sender(http).SendAsync(7,
+            new TelegramPayload(TelegramPayloadKind.Table, cells, null, "Tasks"));
+        Assert.Equal(901, id);
+        Assert.Equal(1, http.Calls);
+        Assert.Equal("/botfake/sendRichMessage", http.Requests[0].Path);
+        using var body = Body(http);
+        var blocks = body.RootElement.GetProperty("rich_message").GetProperty("blocks");
+        Assert.Equal(2, blocks.GetArrayLength());
+        var table = blocks[1];
+        Assert.Equal("table", table.GetProperty("type").GetString());
+        Assert.True(table.GetProperty("is_compact").GetBoolean());
+        Assert.True(table.GetProperty("cells")[0][0].GetProperty("is_header").GetBoolean());
+        Assert.Equal("a31f9c", table.GetProperty("cells")[1][0].GetProperty("text").GetString());
+        Assert.Equal(2, table.GetProperty("cells")[1][0].GetProperty("colspan").GetInt32());
+        Assert.Equal("Tasks", blocks[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task DocumentPayload_SendsMultipartAttachmentWhole()
+    {
+        var http = new TelegramScriptHandler();
+        var filler = new string('p', 1000);
+        var json = "{\"prompt\": \"" + filler + "\"}";
+        var id = await Sender(http).SendAsync(7,
+            new TelegramPayload(TelegramPayloadKind.Document, json, "task-abc.json", "Task abc attached."));
+        Assert.Equal(901, id);
+        Assert.Equal(1, http.Calls);
+        Assert.Equal("/botfake/sendDocument", http.Requests[0].Path);
+        var body = http.Requests[0].Body;
+        Assert.Contains("task-abc.json", body, StringComparison.Ordinal);
+        Assert.Contains("chat_id", body, StringComparison.Ordinal);
+        Assert.Contains("Task abc attached.", body, StringComparison.Ordinal);
+        Assert.Contains(filler, body, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
     public async Task SuccessWithoutMessageId_IsAmbiguousFailure()
     {
         var http = new TelegramScriptHandler

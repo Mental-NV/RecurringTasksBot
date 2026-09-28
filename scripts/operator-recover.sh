@@ -57,7 +57,7 @@ if [ -n "$ENV_NAME" ]; then
     [ -z "$TABLE" ] && TABLE=$(python3 -c "import json; print(json.load(open('$APP_DIR/appsettings.json'))['RecurringTasksBot']['TableName'])")
   fi
 fi
-[ -z "$TABLE" ] && TABLE="RecurringTaskData"
+[ -z "$TABLE" ] && TABLE="RecurringTaskDataV5"
 echo "Target table: $TABLE${ENV_NAME:+ (env $ENV_NAME)}"
 
 if [ -n "$ENV_NAME" ]; then

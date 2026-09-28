@@ -17,6 +17,30 @@ internal static class CommandReplies
         return new ProcessResult(200, [reply]);
     }
 
+    internal static async Task<ProcessResult> CompleteWithDocumentAsync(
+        IUpdateReceiptStore receipts, BotReplySender replies,
+        string ownerId, IncomingUpdate update, string commandText, DateTimeOffset nowUtc,
+        string fileName, string content, string caption, CancellationToken ct)
+    {
+        await EnsureReceiptAsync(receipts, ownerId, update, commandText, nowUtc, ct);
+        await replies.SendDocumentAsync(update.ChatId, fileName, content, caption, ct);
+        await receipts.MarkCompletedAsync(ownerId, update.UpdateId, null, ct);
+        await receipts.MarkReplyDeliveredAsync(ownerId, update.UpdateId, ct);
+        return new ProcessResult(200, [caption]);
+    }
+
+    internal static async Task<ProcessResult> CompleteWithTableAsync(
+        IUpdateReceiptStore receipts, BotReplySender replies,
+        string ownerId, IncomingUpdate update, string commandText, DateTimeOffset nowUtc,
+        string? caption, string cellsJson, string stackedFallback, CancellationToken ct)
+    {
+        await EnsureReceiptAsync(receipts, ownerId, update, commandText, nowUtc, ct);
+        await replies.SendTableAsync(update.ChatId, caption, cellsJson, stackedFallback, ct);
+        await receipts.MarkCompletedAsync(ownerId, update.UpdateId, null, ct);
+        await receipts.MarkReplyDeliveredAsync(ownerId, update.UpdateId, ct);
+        return new ProcessResult(200, [stackedFallback]);
+    }
+
     internal static async Task EnsureReceiptAsync(
         IUpdateReceiptStore receipts,
         string ownerId, IncomingUpdate update, string commandText, DateTimeOffset nowUtc,

@@ -27,6 +27,7 @@ public static class OccurrenceEntityCodec
             ["ContextVersion"] = c.ContextVersion,
             ["CreatedUtc"] = c.CreatedUtc,
             ["ScheduleCron"] = c.ScheduleCron,
+            ["ScheduleTimezone"] = c.ScheduleTimezone,
             ["OccurrenceId"] = c.OccurrenceId,
             ["ScheduledAtUtc"] = c.ScheduledAtUtc,
             ["ExecutionStartedAtUtc"] = c.ExecutionStartedAtUtc,
@@ -59,6 +60,9 @@ public static class OccurrenceEntityCodec
             TableRow.GetDto(props, "ScheduledUtc", entity.RowKey).UtcDateTime,
             SegmentedProperties.Read(props, "Task"),
             TableRow.GetString(props, "ScheduleCron", entity.RowKey),
+            props.TryGetValue("ScheduleTimezone", out var zoneValue) &&
+                zoneValue is string zoneText && zoneText.Length > 0
+                ? zoneText : "UTC",
             TableRow.GetString(props, "OccurrenceId", entity.RowKey),
             TableRow.GetString(props, "ScheduledAtUtc", entity.RowKey),
             TableRow.GetString(props, "ExecutionStartedAtUtc", entity.RowKey),

@@ -1,15 +1,17 @@
 // Command dispatcher: webhook secret, update receipts, verb routing, and
-// acknowledgement/error rules live here exactly once. Feature handlers own
-// command logic; shared reply completion lives in CommandReplies.
+// acknowledgement/error rules live here exactly once. Phase 5 JSON task
+// commands own every verb; legacy positional input is answered with help.
 namespace RecurringTasksBot.Application;
 
 public sealed record ProcessResult(int StatusCode, IReadOnlyList<string> RepliesSent);
 
 public sealed class UpdateDispatcher(
-    IOperationStore operations,
+    ITaskStore tasks,
     IUpdateReceiptStore receipts,
-    IOrchestrationClient orchestrations,
-    ITelegramTransport transport)
+    ITaskOrchestrationClient orchestrations,
+    ITelegramTransport transport,
+    TaskDefaults taskDefaults,
+    IOccurrenceRepository occurrences)
 {
     private BotReplySender Replies => new(transport);
 
@@ -41,19 +43,23 @@ public sealed class UpdateDispatcher(
         var verb = text.Length == 0 ? string.Empty : text.Split((char[]?)null, 2,
             StringSplitOptions.RemoveEmptyEntries)[0].ToLowerInvariant();
 
-        var create = new CreateTaskHandler(operations, receipts, orchestrations, Replies);
-        var list = new ListTasksHandler(operations, receipts, orchestrations, Replies);
-        var delete = new DeleteTaskHandler(operations, receipts, orchestrations, Replies);
-        var help = new HelpHandler(receipts, Replies);
+        var create = new TaskCreateHandler(tasks, receipts, orchestrations, Replies);
+        var get = new TaskGetHandler(tasks, receipts, Replies, taskDefaults);
+        var upkeep = new TaskUpdateHandler(tasks, receipts, orchestrations, Replies);
+        var list = new TaskListHandler(tasks, receipts, Replies, occurrences, orchestrations);
+        var delete = new TaskDeleteHandler(tasks, receipts, orchestrations, Replies);
 
         try
         {
             return verb switch
             {
                 "/create" => await create.HandleCreateAsync(ownerId, update, text, nowUtc, ct),
+                "/get" => await get.HandleGetAsync(ownerId, update, text, nowUtc, ct),
+                "/update" => await upkeep.HandleUpdateAsync(ownerId, update, text, nowUtc, ct),
                 "/list" => await list.HandleListAsync(ownerId, update, text, nowUtc, ct),
                 "/delete" => await delete.HandleDeleteAsync(ownerId, update, text, nowUtc, ct),
-                _ => await help.HandleUnknownAsync(ownerId, update, text, nowUtc, ct),
+                _ => await CommandReplies.CompleteWithReplyAsync(receipts, Replies,
+                    ownerId, update, text, nowUtc, TaskHelp.Unknown, ct),
             };
         }
         catch (Exception ex) when (IsTransient(ex))
@@ -72,12 +78,13 @@ public sealed class UpdateDispatcher(
         string ownerId, UpdateReceipt receipt, IncomingUpdate update, CancellationToken ct)
     {
         // A failed /create confirmation is resent without re-executing
-        // anything. Other commands have no stored reply content, so they are
-        // acknowledged silently.
+        // anything. Other completed commands are acknowledged silently:
+        // update/delete mutations must never apply twice, and reads have no
+        // stored reply content worth resending.
         if (!receipt.ReplyDelivered && receipt.OperationId is not null &&
             receipt.Command.TrimStart().StartsWith("/create", StringComparison.OrdinalIgnoreCase))
         {
-            var create = new CreateTaskHandler(operations, receipts, orchestrations, Replies);
+            var create = new TaskCreateHandler(tasks, receipts, orchestrations, Replies);
             return await create.ResendConfirmationAsync(ownerId, receipt, update, ct);
         }
 

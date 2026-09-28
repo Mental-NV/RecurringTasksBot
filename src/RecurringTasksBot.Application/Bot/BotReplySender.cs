@@ -15,6 +15,47 @@ public sealed class BotReplySender(ITelegramTransport transport)
         return ids;
     }
 
+    // Whole-document delivery for oversized output: one attachment, never
+    // truncated. A transport without document support falls back to chunked
+    // literal text so no byte is lost; other failures propagate.
+    public async Task<IReadOnlyList<long>> SendDocumentAsync(
+        long chatId, string fileName, string content, string? caption = null,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            return [await transport.SendAsync(chatId,
+                new TelegramPayload(TelegramPayloadKind.Document, content, fileName, caption), ct)];
+        }
+        catch (TelegramUnknownMethodException)
+        {
+            return await SendReplyAsync(chatId, content, ct);
+        }
+    }
+
+    // Native table delivery with a stacked-text fallback: transports that
+    // reject the table block (or compact clients) get the same rows as
+    // literal text. Other failures propagate for dispatcher mapping.
+    public async Task<IReadOnlyList<long>> SendTableAsync(
+        long chatId, string? caption, string cellsJson, string stackedFallback,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            return [await transport.SendAsync(chatId,
+                new TelegramPayload(TelegramPayloadKind.Table, cellsJson, null, caption), ct)];
+        }
+        catch (TelegramUnknownMethodException)
+        {
+            return await SendReplyAsync(chatId, stackedFallback, ct);
+        }
+        catch (TelegramSendException ex) when (TelegramErrorClassifier.ClassifyException(ex).Disposition
+            is TelegramDisposition.ContentRejection)
+        {
+            return await SendReplyAsync(chatId, stackedFallback, ct);
+        }
+    }
+
     private async Task<IReadOnlyList<long>> SendPartAsync(
         long chatId, string part, CancellationToken ct)
     {

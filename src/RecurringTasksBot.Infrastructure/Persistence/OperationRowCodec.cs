@@ -26,6 +26,7 @@ public static class OperationRowCodec
             ["FailureSummary"] = record.FailureSummary ?? string.Empty,
             ["CreatedUtc"] = record.CreatedUtc,
             ["UpdatedUtc"] = record.UpdatedUtc,
+            ["ScheduleTimezone"] = record.ScheduleTimezone,
         };
         SegmentedProperties.Write(props, "Text", record.Text);
         TableStorageLimits.CheckEntityFits(props, "operation publication");
@@ -41,6 +42,10 @@ public static class OperationRowCodec
         TableRow.RequireKind(props, entity.RowKey, Kind);
         var instanceId = TableRow.GetString(props, "InstanceId", entity.RowKey);
         var failure = TableRow.GetString(props, "FailureSummary", entity.RowKey);
+        // The zone column postdates V1 rows: absent means UTC.
+        var timezone = props.TryGetValue("ScheduleTimezone", out var zoneValue) &&
+            zoneValue is string zoneText && zoneText.Length > 0
+            ? zoneText : "UTC";
         return new OperationRecord(
             ownerId,
             operationId,
@@ -51,6 +56,7 @@ public static class OperationRowCodec
             string.IsNullOrEmpty(instanceId) ? null : instanceId,
             string.IsNullOrEmpty(failure) ? null : failure,
             TableRow.GetDto(props, "CreatedUtc", entity.RowKey),
-            TableRow.GetDto(props, "UpdatedUtc", entity.RowKey));
+            TableRow.GetDto(props, "UpdatedUtc", entity.RowKey),
+            timezone);
     }
 }

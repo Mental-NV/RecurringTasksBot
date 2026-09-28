@@ -7,9 +7,12 @@ public enum TelegramPayloadKind
     Markdown,
     LiteralRich,
     LiteralPlain,
+    Document,
+    Table,
 }
 
-public sealed record TelegramPayload(TelegramPayloadKind Kind, string Content);
+public sealed record TelegramPayload(
+    TelegramPayloadKind Kind, string Content, string? FileName = null, string? Caption = null);
 
 public enum TelegramDisposition
 {

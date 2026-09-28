@@ -11,6 +11,8 @@ public static class TelegramLimits
     public const int RichTextChars = 32768;
     public const int PlainFallbackMaxUnits = 4096;
     public const int LiteralNewlineWindow = 512;
+    // Telegram Bot API ceiling for documents sent by bots (50 MB).
+    public const long DocumentMaxBytes = 50L * 1024 * 1024;
 
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan ProgressReserve = TimeSpan.FromSeconds(45);

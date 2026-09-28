@@ -66,4 +66,68 @@ public sealed class BotReplySenderTests
         await Assert.ThrowsAsync<TelegramSendException>(() =>
             new BotReplySender(transport).SendReplyAsync(7, "hi"));
     }
+
+    [Fact]
+    public async Task Document_SendsOneWholeAttachment()
+    {
+        var transport = new FakeTelegramSender();
+        var content = new string('j', 40000);
+        var ids = await new BotReplySender(transport).SendDocumentAsync(
+            7, "task-abc.json", content, "Task abc attached.");
+        var payload = Assert.Single(transport.Payloads);
+        Assert.Equal(TelegramPayloadKind.Document, payload.Kind);
+        Assert.Equal("task-abc.json", payload.FileName);
+        Assert.Equal("Task abc attached.", payload.Caption);
+        Assert.Equal(content, payload.Content);
+        Assert.Single(ids);
+    }
+
+    [Fact]
+    public async Task Table_SendsOneTablePayload()
+    {
+        var transport = new FakeTelegramSender();
+        const string cells = """[[{"text":"ID","is_header":true}],[{"text":"a31f9c"}]]""";
+        var ids = await new BotReplySender(transport).SendTableAsync(7, null, cells, "a31f9c | active");
+        var payload = Assert.Single(transport.Payloads);
+        Assert.Equal(TelegramPayloadKind.Table, payload.Kind);
+        Assert.Equal(cells, payload.Content);
+        Assert.Single(ids);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TableRejection_FallsBackToStackedText(bool unknownMethod)
+    {
+        var transport = new FakeTelegramSender();
+        const string cells = """[[{"text":"ID","is_header":true}],[{"text":"a31f9c"}]]""";
+        const string stacked = "a31f9c | active";
+        transport.RejectPayload = payload =>
+            payload.Kind == TelegramPayloadKind.Table
+                ? unknownMethod
+                    ? new TelegramUnknownMethodException(404, 404, "unknown method")
+                    : new TelegramSendException(400, "Bad Request: can't parse entities", null, 400)
+                : null;
+        var ids = await new BotReplySender(transport).SendTableAsync(7, null, cells, stacked);
+        var fallback = Assert.Single(transport.Payloads, p => p.Kind == TelegramPayloadKind.LiteralRich);
+        Assert.Equal(stacked, fallback.Content);
+        Assert.Single(ids);
+    }
+
+    [Fact]
+    public async Task DocumentWithoutMethodSupport_FallsBackToChunkedText()
+    {
+        var transport = new FakeTelegramSender();
+        var content = new string('y', 40000);
+        transport.RejectPayload = payload =>
+            payload.Kind == TelegramPayloadKind.Document
+                ? new TelegramUnknownMethodException(404, 404, "unknown method")
+                : null;
+        var ids = await new BotReplySender(transport).SendDocumentAsync(7, "task-abc.json", content);
+        var fallback = transport.Payloads
+            .Where(p => p.Kind == TelegramPayloadKind.LiteralRich).ToList();
+        Assert.True(fallback.Count > 1);
+        Assert.Equal(content, string.Concat(fallback.Select(p => p.Content)));
+        Assert.Equal(fallback.Count, ids.Count);
+    }
 }

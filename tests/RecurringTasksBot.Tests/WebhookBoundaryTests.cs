@@ -94,8 +94,10 @@ public sealed class WebhookBoundaryTests
     {
         var options = new TelegramOptions("token", "expected-secret");
         var function = new WebhookFunction(
-            options, new FakeOperationStore(), new FakeReceiptStore(),
-            new FakeTelegramSender(), _ => throw new NotSupportedException());
+            options, new FakeTaskStore(), new FakeReceiptStore(),
+            new FakeTelegramSender(), TaskDefaults.Default,
+            new FakeOccurrenceRepository(new FakeOperationStore(), new FakeClock()),
+            _ => throw new NotSupportedException());
         var context = new Mock<FunctionContext>();
         var response = await function.Run(
             new ThrowingBodyRequest(context.Object), null!, context.Object, CancellationToken.None);

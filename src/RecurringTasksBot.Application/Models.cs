@@ -21,7 +21,9 @@ public sealed record OperationRecord(
     string? InstanceId,
     string? FailureSummary,
     DateTimeOffset CreatedUtc,
-    DateTimeOffset UpdatedUtc);
+    DateTimeOffset UpdatedUtc,
+    // Schedule zone for the frozen execution context; V1 operations are UTC.
+    string ScheduleTimezone = "UTC");
 
 public sealed record UpdateReceipt(
     string OwnerId,

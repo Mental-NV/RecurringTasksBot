@@ -31,7 +31,8 @@ public sealed class ExecuteOccurrenceHandler(
     // waits as Durable timers, advancing AttemptIndex only for work retries.
     public async Task<SingleAttemptResult> ExecuteAttemptAsync(
         string ownerId, string operationId, DateTime scheduledUtc, int attemptIndex,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        OccurrenceGenerationOverrides? overrides = null)
     {
         // Transient storage failures on the attempt boundary are work
         // retries, never task killers: the orchestrator re-invokes the
@@ -82,22 +83,24 @@ public sealed class ExecuteOccurrenceHandler(
         // promptly, and failure publication still owns its claim.
         return await leases.RunAsync(ownerId, operationId, scheduledUtc, claimId, attemptIndex,
             workToken => AttemptOccurrenceAsync(
-                op, existing, claimId, scheduledUtc, attemptIndex, workToken, workStart), ct);
+                op, existing, claimId, scheduledUtc, attemptIndex, workToken, workStart, overrides), ct);
     }
 
     // Single retry-cap point, inside the lease so terminal failure
     // publication still owns its claim.
     private async Task<SingleAttemptResult> AttemptOccurrenceAsync(
         OperationRecord op, DeliveryReceipt? receipt, string claimId, DateTime scheduledUtc,
-        int attemptIndex, CancellationToken ct, DateTimeOffset workStart) =>
+        int attemptIndex, CancellationToken ct, DateTimeOffset workStart,
+        OccurrenceGenerationOverrides? overrides) =>
         await support.CapAsync(
             await AttemptOccurrenceCoreAsync(
-                op, receipt, claimId, scheduledUtc, attemptIndex, ct, workStart),
+                op, receipt, claimId, scheduledUtc, attemptIndex, ct, workStart, overrides),
             op.OwnerId, op.OperationId, scheduledUtc, claimId, attemptIndex, ct);
 
     private async Task<SingleAttemptResult> AttemptOccurrenceCoreAsync(
         OperationRecord op, DeliveryReceipt? receipt, string claimId, DateTime scheduledUtc,
-        int attemptIndex, CancellationToken ct, DateTimeOffset workStart)
+        int attemptIndex, CancellationToken ct, DateTimeOffset workStart,
+        OccurrenceGenerationOverrides? overrides)
     {
         var ownerId = op.OwnerId;
         var operationId = op.OperationId;
@@ -126,7 +129,8 @@ public sealed class ExecuteOccurrenceHandler(
         }
 
         var (context, initFailure) = await generator.InitializeAsync(
-            op, claimId, scheduledUtc, executionStarted, AdminInstruction(), attemptIndex, ct);
+            op, claimId, scheduledUtc, executionStarted, AdminInstruction(), attemptIndex, ct,
+            overrides);
         if (initFailure is not null)
             return initFailure;
         if (context is null)
@@ -152,7 +156,7 @@ public sealed class ExecuteOccurrenceHandler(
         if (current.AnswerVersion is null || current.PlanVersion is null)
         {
             var generated = await generator.GenerateAsync(op, context, claimId, scheduledUtc,
-                executionStarted, attemptIndex, attempts, workStart, ct);
+                executionStarted, attemptIndex, attempts, workStart, ct, overrides);
             if (generated is not null)
                 return generated;
             try

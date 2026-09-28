@@ -29,7 +29,8 @@ public sealed class TableOccurrenceRepository(TableClients clients, TimeProvider
         var conflicts = 0;
         while (true)
         {
-            var (opEntity, op) = await ReadOperationAsync(request.OwnerId, request.OperationId, ct);
+            var (opEntity, op) = await ReadOperationAsync(
+                request.OwnerId, request.OperationId, request.ScheduledUtc, ct);
             var receiptEntity = await TryGetRowAsync(request.OwnerId,
                 TableRowKeys.DeliveryReceipt(request.OperationId, request.ScheduledUtc), ct)
                 ?? throw new ClaimLostException();
@@ -355,20 +356,39 @@ public sealed class TableOccurrenceRepository(TableClients clients, TimeProvider
     }
 
     private async Task<(TableEntity Entity, OperationRecord Record)> ReadOperationAsync(
-        string ownerId, string operationId, CancellationToken ct)
+        string ownerId, string operationId, DateTime scheduledUtc, CancellationToken ct)
     {
-        var entity = await TryGetRowAsync(ownerId, TableRowKeys.Operation(operationId), ct)
-            ?? throw new OperationStoppedException($"operation {operationId} is missing");
-        return (entity, ToOperationRecord(ownerId, operationId, entity));
+        var entity = await TryGetRowAsync(ownerId, TableRowKeys.Operation(operationId), ct);
+        if (entity is not null)
+            return (entity, ToOperationRecord(ownerId, operationId, entity));
+        return await ReadTaskOperationAsync(ownerId, operationId, scheduledUtc, ct);
     }
 
     private async Task<(TableEntity Entity, OperationStatus Status)> ReadOperationStatusAsync(
         string ownerId, string operationId, CancellationToken ct)
     {
-        var entity = await TryGetRowAsync(ownerId, TableRowKeys.Operation(operationId), ct)
+        var entity = await TryGetRowAsync(ownerId, TableRowKeys.Operation(operationId), ct);
+        if (entity is not null)
+            return (entity, OperationStatusNames.Parse(
+                (string?)entity["Status"] ?? OperationStatusNames.Starting));
+        var taskEntity = await TryGetRowAsync(ownerId, TableRowKeys.Task(operationId), ct)
             ?? throw new OperationStoppedException($"operation {operationId} is missing");
-        return (entity, OperationStatusNames.Parse(
-            (string?)entity["Status"] ?? OperationStatusNames.Starting));
+        var task = TaskRowCodec.FromEntity(ownerId, operationId, taskEntity);
+        return (taskEntity, TaskOperationSynthesis.MapStatus(task.Status));
+    }
+
+    // Phase 5 tasks keep no operation rows: the task row fences the
+    // transaction and projects prompt, recurrence text, and liveness. The
+    // fence touch lands on the task row; definition edits stay guarded by
+    // the task revision, and list ordering uses creation time.
+    private async Task<(TableEntity Entity, OperationRecord Record)> ReadTaskOperationAsync(
+        string ownerId, string taskId, DateTime scheduledUtc, CancellationToken ct)
+    {
+        var entity = await TryGetRowAsync(ownerId, TableRowKeys.Task(taskId), ct)
+            ?? throw new OperationStoppedException($"operation {taskId} is missing");
+        var task = TaskRowCodec.FromEntity(ownerId, taskId, entity);
+        return (entity, TaskOperationSynthesis.ToOperationRecord(
+            ownerId, taskId, task.ChatId, task.InstanceId, task, scheduledUtc));
     }
 
     private static OperationRecord ToOperationRecord(

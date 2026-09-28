@@ -32,7 +32,7 @@ public sealed class OpenRouterLlmExecutor(
     string apiKey) : ILlmExecutor
 {
     public Task<LlmResult> ExecuteAsync(LlmRequest request, CancellationToken ct = default) =>
-        ExecuteMessagesAsync(request.Messages, request.MaxSourceScalars, ct);
+        ExecuteMessagesAsync(request.Messages, request.MaxSourceScalars, ct, request);
 
     public const string ServerToolType = "openrouter:web_search";
     public const string SearchEngineParallel = "parallel";
@@ -47,11 +47,14 @@ public sealed class OpenRouterLlmExecutor(
 
     // Semantic config value -> provider API value. Only "Maximum" is a
     // supported configuration; anything else fails clearly instead of
-    // silently running at a lower effort.
+    // silently running at a lower effort. Phase 5 task tokens map onto the
+    // same provider scale, with med reaching medium.
     public static string MapReasoningEffort(string configured)
     {
         if (configured.Equals("Maximum", StringComparison.OrdinalIgnoreCase))
             return "max";
+        if (configured.Equals("med", StringComparison.OrdinalIgnoreCase))
+            return "medium";
         if (SupportedEfforts.Contains(configured))
             return configured.ToLowerInvariant();
         throw new InvalidOperationException(
@@ -59,7 +62,8 @@ public sealed class OpenRouterLlmExecutor(
     }
 
     public async Task<LlmResult> ExecuteMessagesAsync(
-        IReadOnlyList<ChatMessage> messages, int maxSourceScalars, CancellationToken ct = default)
+        IReadOnlyList<ChatMessage> messages, int maxSourceScalars, CancellationToken ct = default,
+        LlmRequest? request = null)
     {
         provider.Validate();
         if (messages is null || messages.Count == 0)
@@ -69,20 +73,30 @@ public sealed class OpenRouterLlmExecutor(
         if (maxSourceScalars <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxSourceScalars));
 
-        var json = OpenRouterRequestBuilder.BuildRequestJson(provider, execution, messages);
+        string json;
+        try
+        {
+            json = OpenRouterRequestBuilder.BuildRequestJson(provider, execution, messages, request);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Unsupported per-request combinations fail terminally; never
+            // downgraded silently to another effort or search mode.
+            throw new LlmExecutionException(LlmFailureKind.Permanent, ex.Message);
+        }
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(execution.RequestTimeout);
-        using var request = new HttpRequestMessage(HttpMethod.Post,
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post,
             provider.BaseUrl.TrimEnd('/') + "/chat/completions");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-        request.Headers.TryAddWithoutValidation("X-Title", "RecurringTasksBot");
-        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        httpRequest.Headers.TryAddWithoutValidation("X-Title", "RecurringTasksBot");
+        httpRequest.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         var elapsed = Stopwatch.StartNew();
         var stage = "connecting";
         try
         {
-            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            using var response = await http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             stage = "reading response";
             var retryAfter = RetryAfterFromHeaders(response, DateTimeOffset.UtcNow);
             if (!response.IsSuccessStatusCode)

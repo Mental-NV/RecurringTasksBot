@@ -130,10 +130,27 @@ public sealed class ConfigurationTests
         });
         var storage = AppConfiguration.ReadTableStorage(config);
         Assert.Equal("UseDevelopmentStorage=true", storage.StorageConnectionString);
-        Assert.Equal("RecurringTaskData", storage.TableName);
+        Assert.Equal("RecurringTaskDataV5", storage.TableName);
         var telegram = AppConfiguration.ReadTelegram(config);
         Assert.Equal("token", telegram.BotToken);
         Assert.Equal("secret", telegram.WebhookSecret);
+    }
+
+    [Fact]
+    public void TaskDefaults_SpecDefaultsAndValidation()
+    {
+        var config = Config(new Dictionary<string, string?>());
+        var defaults = AppConfiguration.ReadTaskDefaults(config);
+        Assert.Equal("None", defaults.MemoryMode);
+        Assert.Equal("low", defaults.ReasoningEffort);
+        Assert.True(defaults.WebSearch);
+        Assert.Equal("1", defaults.Revision);
+
+        var bad = Config(new Dictionary<string, string?>
+        {
+            ["RecurringTasksBot:TaskDefaults:ReasoningEffort"] = "Maximum",
+        });
+        Assert.Throws<InvalidOperationException>(() => AppConfiguration.ReadTaskDefaults(bad));
     }
 
     [Fact]

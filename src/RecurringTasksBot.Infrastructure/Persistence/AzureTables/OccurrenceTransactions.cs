@@ -36,7 +36,7 @@ public static class OccurrenceTransactions
         var contextVersion = ArtifactVersion.New();
         var context = new FrozenContextRecord(
             contextVersion, request.OwnerId, request.OperationId, scheduled,
-            op.Text, op.CronExpression,
+            op.Text, op.CronExpression, op.ScheduleTimezone,
             ExecutionMessageBuilder.OccurrenceIdFor(request.OperationId, scheduled),
             ExecutionMessageBuilder.ToIso8601(scheduled),
             ExecutionMessageBuilder.ToIso8601(request.Inputs.ExecutionStartedUtc),

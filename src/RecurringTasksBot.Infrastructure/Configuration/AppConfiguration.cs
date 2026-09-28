@@ -52,9 +52,28 @@ public static class AppConfiguration
         MaxResultsPerSearch: Int(config, $"{Section}:Llm:MaxResultsPerSearch", 5),
         MaxTotalResults: Int(config, $"{Section}:Llm:MaxTotalResults", 40));
 
+    public static TaskDefaults ReadTaskDefaults(IConfiguration config)
+    {
+        var defaults = new TaskDefaults(
+            MemoryMode: Str(config, $"{Section}:TaskDefaults:MemoryMode", TaskMemoryModes.None),
+            ReasoningEffort: Str(config, $"{Section}:TaskDefaults:ReasoningEffort", TaskReasoningEfforts.Low),
+            WebSearch: Bool(config, $"{Section}:TaskDefaults:WebSearch", true),
+            Revision: Str(config, $"{Section}:TaskDefaults:Revision", "1"));
+        try
+        {
+            defaults.Validate();
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new InvalidOperationException($"Invalid TaskDefaults configuration: {ex.Message}", ex);
+        }
+
+        return defaults;
+    }
+
     public static TableStorageOptions ReadTableStorage(IConfiguration config) => new(
         StorageConnectionString: Required(config, $"{Section}:AzureWebJobsStorage"),
-        TableName: Str(config, $"{Section}:TableName", "RecurringTaskData"));
+        TableName: Str(config, $"{Section}:TableName", "RecurringTaskDataV5"));
 
     public static TelegramOptions ReadTelegram(IConfiguration config) => new(
         BotToken: Required(config, $"{Section}:Telegram:BotToken"),

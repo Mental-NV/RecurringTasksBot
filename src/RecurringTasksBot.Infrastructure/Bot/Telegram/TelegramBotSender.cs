@@ -27,14 +27,22 @@ public sealed class TelegramBotSender(HttpClient http, TelegramOptions options) 
     // swallows a rejection.
     public async Task<long> SendAsync(long chatId, TelegramPayload payload, CancellationToken ct = default)
     {
-        var (method, body) = payload.Kind switch
+        var (method, content) = payload.Kind switch
         {
-            TelegramPayloadKind.Markdown =>
-                ("sendRichMessage", TelegramRichMessage.BuildMarkdownRequestJson(chatId, payload.Content)),
-            TelegramPayloadKind.LiteralRich =>
-                ("sendRichMessage", TelegramRichMessage.BuildLiteralRichRequestJson(chatId, payload.Content)),
-            TelegramPayloadKind.LiteralPlain =>
-                ("sendMessage", JsonSerializer.Serialize(new SendRequest(chatId, payload.Content), Json)),
+            TelegramPayloadKind.Markdown => ("sendRichMessage", (HttpContent)new StringContent(
+                TelegramRichMessage.BuildMarkdownRequestJson(chatId, payload.Content),
+                System.Text.Encoding.UTF8, "application/json")),
+            TelegramPayloadKind.LiteralRich => ("sendRichMessage", (HttpContent)new StringContent(
+                TelegramRichMessage.BuildLiteralRichRequestJson(chatId, payload.Content),
+                System.Text.Encoding.UTF8, "application/json")),
+            TelegramPayloadKind.LiteralPlain => ("sendMessage", (HttpContent)new StringContent(
+                JsonSerializer.Serialize(new SendRequest(chatId, payload.Content), Json),
+                System.Text.Encoding.UTF8, "application/json")),
+            TelegramPayloadKind.Document =>
+                ("sendDocument", BuildDocumentContent(chatId, payload)),
+            TelegramPayloadKind.Table => ("sendRichMessage", (HttpContent)new StringContent(
+                TelegramRichMessage.BuildTableRequestJson(chatId, payload.Caption, payload.Content),
+                System.Text.Encoding.UTF8, "application/json")),
             _ => throw new ArgumentOutOfRangeException(nameof(payload)),
         };
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -43,7 +51,7 @@ public sealed class TelegramBotSender(HttpClient http, TelegramOptions options) 
         {
             using var request = new HttpRequestMessage(HttpMethod.Post,
                 $"https://api.telegram.org/bot{options.BotToken}/{method}");
-            request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+            request.Content = content;
             var response = await http.SendAsync(request, timeout.Token);
             return await ReadPayloadResultAsync(response, timeout.Token);
         }
@@ -51,6 +59,26 @@ public sealed class TelegramBotSender(HttpClient http, TelegramOptions options) 
         {
             throw new TelegramSendException(null, "Telegram request timed out after 30 seconds.");
         }
+    }
+
+    // sendDocument is multipart: UTF-8 JSON bytes travel whole, never
+    // truncated or chunked. The caption is a short label, not payload data.
+    private static MultipartFormDataContent BuildDocumentContent(long chatId, TelegramPayload payload)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(payload.Content);
+        if (bytes.Length > TelegramLimits.DocumentMaxBytes)
+            throw new ArgumentOutOfRangeException(nameof(payload),
+                $"Document is {bytes.Length} bytes, above the Telegram {TelegramLimits.DocumentMaxBytes}-byte ceiling.");
+        var form = new MultipartFormDataContent();
+        form.Add(new StringContent(
+            chatId.ToString(System.Globalization.CultureInfo.InvariantCulture)), "chat_id");
+        var file = new ByteArrayContent(bytes);
+        file.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        form.Add(file, "document", payload.FileName ?? "result.json");
+        if (!string.IsNullOrEmpty(payload.Caption))
+            form.Add(new StringContent(payload.Caption), "caption");
+        return form;
     }
 
     private static async Task<long> ReadPayloadResultAsync(HttpResponseMessage response, CancellationToken ct)
