@@ -33,6 +33,8 @@ copying configuration tables or procedures.
 
 ## Plan
 
+- [Natural-language commands](Spec.Phase6.md) — proposed LLM
+  interpretation, guardrails, confirmation, conversation state, and framework choices.
 - [Backlog](Backlog.md) — open scale/security questions and future ideas.
 - [History](History/README.md) — frozen historical specs (not current
   guidance), including the completed `Spec.Phase5.md`.
