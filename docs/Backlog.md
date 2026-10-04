@@ -9,7 +9,7 @@
   App for UI backend operations designed for minimal invocation to
   control billing.
 - [ ] [UI/UX] Ability to call commands through regular conversation
-  ([proposed design](Spec.Phase6.md)).
+  ([proposed design](NaturalLanguageCommands.md)).
 - [x] [UI/UX] A command to update existing recurring task (any available parameter, e.g. prompt, schedule, reasoning effort, etc)
 
 - [ ] [UI/UX] CLI access (depends on authenticaion and security)

@@ -33,9 +33,9 @@ copying configuration tables or procedures.
 
 ## Plan
 
-- [LLM profiles and direct DeepSeek](Design.LlmProfiles.md) — proposed unified
+- [Phase 6: LLM profiles and direct DeepSeek](Spec.Phase6.md) — implementation plan for unified
   task defaults, provider selection, environment references, native search,
-  cost validation, and rollout.
+  functional validation, and rollout.
 - [Natural-language commands](NaturalLanguageCommands.md) — proposed LLM
   interpretation, guardrails, confirmation, conversation state, and framework choices.
 - [Backlog](Backlog.md) — open scale/security questions and future ideas.
