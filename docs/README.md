@@ -33,7 +33,10 @@ copying configuration tables or procedures.
 
 ## Plan
 
-- [Natural-language commands](Spec.Phase6.md) — proposed LLM
+- [LLM profiles and direct DeepSeek](Design.LlmProfiles.md) — proposed unified
+  task defaults, provider selection, environment references, native search,
+  cost validation, and rollout.
+- [Natural-language commands](NaturalLanguageCommands.md) — proposed LLM
   interpretation, guardrails, confirmation, conversation state, and framework choices.
 - [Backlog](Backlog.md) — open scale/security questions and future ideas.
 - [History](History/README.md) — frozen historical specs (not current
