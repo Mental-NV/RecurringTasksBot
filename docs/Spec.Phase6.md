@@ -2,8 +2,6 @@
 
 Status: ready for implementation; this document does not claim the code is implemented.  
 Updated: 2026-10-04.  
-Audience: an AI coding agent with repository access and live development-bot/LLM
-access, but no web browsing or search capability.
 
 ## 0. Execution instructions
 
