@@ -230,12 +230,14 @@ public sealed class OpenRouterTransportTests
     }
 
     [Fact]
-    public void Request_NeverDisablesSearchSilently()
+    public void Request_SearchDisabled_OmitsToolsWithoutFailing()
         {
         var provider = TestLlm.Provider() with { SearchEnabled = false };
-        Assert.Throws<InvalidOperationException>(() =>
-            OpenRouterRequestBuilder.BuildRequestJson(provider, TestLlm.Execution(),
-    [new ChatMessage("user", "hi")]));
+        provider.Validate();
+        var json = OpenRouterRequestBuilder.BuildRequestJson(provider, TestLlm.Execution(),
+    [new ChatMessage("user", "hi")]);
+        Assert.DoesNotContain("tools", json);
+        Assert.DoesNotContain("max_tool_calls", json);
     }
 
     [Fact]

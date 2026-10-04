@@ -25,6 +25,9 @@ grep -q "fresh_cutover\|retire_old_state" "$WF" && fail "cutover/retirement bran
 grep -q "parameters: >" "$WF" && fail "inline Bicep parameter overrides remain"
 grep -q "parameters: \${{ env.RESOLVED_PARAMS }}" "$WF" || fail "params file not passed to deployment"
 grep -q "python3 - infra/main.parameters.json" "$WF" || fail "inventory step does not pass the template on stdin correctly"
+grep -q "DEPLOY_DEEPSEEK_API_KEY" "$WF" || fail "deploy workflow does not wire the DeepSeek secret"
+grep -q 'secrets\.RecurringTasksBot__Llm__DeepSeek__ApiKey' "$WF" \
+  || fail "deploy workflow does not use the renamed DeepSeek secret"
 grep -q "path: ./app.zip" "$WF" || fail "artifact upload is not the prebuilt zip"
 grep -q "path: ./publish$" "$WF" && fail "publish directory uploaded directly (drops hidden dirs)"
 for v in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
@@ -47,28 +50,46 @@ for s in scripts/operator-cleanup.sh scripts/operator-recover.sh \
   grep -q "main.parameters.json" "$s" || fail "$s does not read the canonical template for prod"
 done
 for p in functionAppName webhookUrl storageConnectionString telegramBotToken \
-    telegramWebhookSecret llmApiKey; do
+    telegramWebhookSecret llmApiKey deepSeekApiKey; do
   v=$(py "$p")
   case "$v" in
     __*__) ;;
     *) fail "template parameter $p is not a placeholder ($v)" ;;
   esac
 done
+# The selector is a static profile name, not a placeholder: either shipped
+# profile may be selected without changing the gate. Both selections are
+# exercised against fixture templates below and in section 3.
+case "$(py llmActiveProfile)" in
+  OpenRouter|DeepSeek) ;;
+  *) fail "template selector names an unknown profile ($(py llmActiveProfile))" ;;
+esac
 echo "PASS: parameter template carries statics and placeholders"
 
 # 3. Resolver behavior with fixture values (never real secrets).
+# Selection-specific wiring is asserted against explicit fixture copies
+# for BOTH profiles, never against the production template's own
+# selector: flipping llmActiveProfile in the real template must not
+# change this gate. The real template gets only selector-independent
+# structural checks.
 export FUNCTION_APP_NAME="func-fixture"
 export PRODUCTION_WEBHOOK_URL="https://func-fixture.azurewebsites.net/api/webhook"
 export DEPLOY_STORAGE_CONNECTION_STRING='Account=fixture;Key="a\b;c"'
 export DEPLOY_TELEGRAM_BOT_TOKEN="fixture-bot-token"
 export DEPLOY_TELEGRAM_WEBHOOK_SECRET="fixture-webhook-secret"
 export DEPLOY_LLM_API_KEY="fixture-llm-key"
+export DEPLOY_DEEPSEEK_API_KEY="fixture-deepseek-key"
 before=$(shasum -a 256 "$TEMPLATE" | cut -d' ' -f1)
-export SHIM_RESOLVED="$(mktemp)"
-out=$(bash scripts/resolve-deploy-parameters.sh --out "$SHIM_RESOLVED") \
-  || fail "resolver failed"
-[ "$(shasum -a 256 "$TEMPLATE" | cut -d' ' -f1)" = "$before" ] || fail "resolver modified the template"
-python3 - "$SHIM_RESOLVED" <<'EOF' || fail "resolved values wrong"
+mk_fixture_template() {
+  python3 - "$TEMPLATE" "$1" "$2" <<'EOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["parameters"]["llmActiveProfile"]["value"] = sys.argv[3]
+json.dump(doc, open(sys.argv[2], "w"), indent=2)
+EOF
+}
+check_common_values() {
+  python3 - "$1" <<'EOF' || fail "resolved values wrong in $1"
 import json, sys
 params = json.load(open(sys.argv[1]))["parameters"]
 assert params["functionAppName"]["value"] == "func-fixture"
@@ -79,8 +100,83 @@ assert params["tableName"]["value"] == "RecurringTaskDataV5"
 assert not any(v.startswith("__") for p, v in
     ((n, e["value"]) for n, e in params.items()) if isinstance(v, str))
 EOF
+}
+# 3a. The actual template, independently of its selector: it resolves
+# with fixture values, keeps its statics, leaves no placeholders, and
+# prints no supplied value. No assertion here depends on which profile
+# the template currently selects.
+export SHIM_RESOLVED="$(mktemp)"
+out=$(bash scripts/resolve-deploy-parameters.sh --out "$SHIM_RESOLVED") \
+  || fail "resolver failed on the actual template"
+[ "$(shasum -a 256 "$TEMPLATE" | cut -d' ' -f1)" = "$before" ] || fail "resolver modified the template"
+check_common_values "$SHIM_RESOLVED"
 echo "$out" | grep -q "fixture" && fail "resolver printed a supplied value"
 rm -f "$SHIM_RESOLVED"
+# 3b. OpenRouter-selected fixture copy: the OpenRouter key is required,
+# the DeepSeek key is the optional rollback copy.
+OPEN_TEMPLATE="$(mktemp)"
+mk_fixture_template "$OPEN_TEMPLATE" "OpenRouter"
+export SHIM_OPEN="$(mktemp)"
+out=$(bash scripts/resolve-deploy-parameters.sh --template "$OPEN_TEMPLATE" --out "$SHIM_OPEN") \
+  || fail "resolver refuses a complete OpenRouter selection"
+check_common_values "$SHIM_OPEN"
+python3 - "$SHIM_OPEN" <<'EOF' || fail "OpenRouter selection resolves the wrong keys"
+import json, sys
+params = json.load(open(sys.argv[1]))["parameters"]
+assert params["llmActiveProfile"]["value"] == "OpenRouter"
+assert params["llmApiKey"]["value"] == "fixture-llm-key"
+assert params["deepSeekApiKey"]["value"] == "fixture-deepseek-key"
+EOF
+echo "$out" | grep -q "fixture" && fail "resolver printed a supplied value"
+rm -f "$SHIM_OPEN"
+unset DEPLOY_DEEPSEEK_API_KEY
+export SHIM_OPEN="$(mktemp)"
+bash scripts/resolve-deploy-parameters.sh --template "$OPEN_TEMPLATE" --out "$SHIM_OPEN" >/dev/null \
+  || fail "resolver requires the inactive DeepSeek credential under OpenRouter"
+python3 - "$SHIM_OPEN" <<'EOF' || fail "absent DeepSeek key must resolve empty under OpenRouter"
+import json, sys
+params = json.load(open(sys.argv[1]))["parameters"]
+assert params["deepSeekApiKey"]["value"] == ""
+assert params["llmApiKey"]["value"] == "fixture-llm-key"
+EOF
+rm -f "$SHIM_OPEN"
+export DEPLOY_DEEPSEEK_API_KEY="fixture-deepseek-key"
+if DEPLOY_LLM_API_KEY="" bash scripts/resolve-deploy-parameters.sh --template "$OPEN_TEMPLATE" --out /tmp/should-not-exist.json 2>/dev/null; then
+  fail "resolver accepts a missing OpenRouter credential under an OpenRouter selector"
+fi
+rm -f "$OPEN_TEMPLATE"
+# 3c. DeepSeek-selected fixture copy: the DeepSeek key is required, the
+# OpenRouter key becomes the optional rollback copy.
+DEEP_TEMPLATE="$(mktemp)"
+mk_fixture_template "$DEEP_TEMPLATE" "DeepSeek"
+export SHIM_DEEP="$(mktemp)"
+bash scripts/resolve-deploy-parameters.sh --template "$DEEP_TEMPLATE" --out "$SHIM_DEEP" >/dev/null \
+  || fail "resolver refuses a complete DeepSeek selection"
+check_common_values "$SHIM_DEEP"
+python3 - "$SHIM_DEEP" <<'EOF' || fail "DeepSeek selection resolves the wrong keys"
+import json, sys
+params = json.load(open(sys.argv[1]))["parameters"]
+assert params["llmActiveProfile"]["value"] == "DeepSeek"
+assert params["deepSeekApiKey"]["value"] == "fixture-deepseek-key"
+assert params["llmApiKey"]["value"] == "fixture-llm-key"
+EOF
+rm -f "$SHIM_DEEP"
+if DEPLOY_DEEPSEEK_API_KEY="" bash scripts/resolve-deploy-parameters.sh --template "$DEEP_TEMPLATE" --out /tmp/should-not-exist.json 2>/dev/null; then
+  fail "resolver accepts a missing DeepSeek credential under a DeepSeek selector"
+fi
+export SHIM_DEEP="$(mktemp)"
+if DEPLOY_LLM_API_KEY="" bash scripts/resolve-deploy-parameters.sh --template "$DEEP_TEMPLATE" --out "$SHIM_DEEP" >/dev/null; then
+  python3 - "$SHIM_DEEP" <<'EOF' || fail "absent OpenRouter key must resolve empty under DeepSeek"
+import json, sys
+params = json.load(open(sys.argv[1]))["parameters"]
+assert params["llmApiKey"]["value"] == ""
+assert params["deepSeekApiKey"]["value"] == "fixture-deepseek-key"
+EOF
+else
+  fail "resolver requires the inactive OpenRouter credential under a DeepSeek selector"
+fi
+rm -f "$SHIM_DEEP" "$DEEP_TEMPLATE"
+export DEPLOY_LLM_API_KEY="fixture-llm-key"
 if FUNCTION_APP_NAME="" bash scripts/resolve-deploy-parameters.sh --out /tmp/should-not-exist.json 2>/dev/null; then
   fail "resolver accepts missing variables"
 fi
@@ -119,7 +215,8 @@ chmod +x "$SHIM/curl" "$SHIM/func"
 export RecurringTasksBot__Telegram__BotToken="dummy"
 export RecurringTasksBot__Telegram__WebhookSecret="dummy-dev-secret-00000000000000000000"
 export RecurringTasksBot__AzureWebJobsStorage="DefaultEndpointsProtocol=https;AccountName=devrecurringtasksbot;AccountKey=Zm9v;EndpointSuffix=core.windows.net"
-export RecurringTasksBot__Llm__ApiKey="dummy-llm-key"
+# No LLM credential is exported: the launcher must not require a fixed
+# OpenRouter key; the shared .NET resolver owns selected-provider validation.
 DEV_PROFILE_HUB=$(python3 -c "import json; print(json.load(open('src/RecurringTasksBot.FunctionApp/appsettings.Development.json'))['RecurringTasksBot']['TaskHubName'])")
 out=$(PATH="$SHIM:/usr/bin:/bin" bash scripts/launch-local.sh 2>/dev/null | grep EFFECTIVE_HUB) \
   || fail "launch-local did not reach func start"

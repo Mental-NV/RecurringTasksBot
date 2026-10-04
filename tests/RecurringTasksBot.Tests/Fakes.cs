@@ -567,7 +567,8 @@ public static class TestLlm
         RequestTimeout: TimeSpan.FromSeconds(480),
         CompletionTokenBudget: 131072,
         GenerationRetries: 2,
-        SystemInstruction: string.Empty);
+        SystemInstruction: string.Empty,
+        SearchEnabled: true);
 
     public static OpenRouterOptions Provider() => new(
         Provider: ProviderName,
@@ -579,6 +580,15 @@ public static class TestLlm
         SearchMode: "fast",
         MaxSearches: 2,
         MaxResultsPerSearch: 5,
+        MaxTotalResults: 10);
+
+    public static DeepSeekOptions DeepSeekProvider() => new(
+        Provider: "DeepSeek",
+        BaseUrl: "https://api.deepseek.com/anthropic",
+        Model: "deepseek-flash",
+        ReasoningEffort: "Maximum",
+        SearchEnabled: true,
+        MaxSearches: 2,
         MaxTotalResults: 10);
 }
 

@@ -1,7 +1,10 @@
-// Offline LLM smoke probe: builds the exact execution messages and,
-// only with --execute on a machine with network access plus an API key,
-// performs one live OpenRouter call. Shares the host configuration
-// loader; never references the FunctionApp assembly.
+// LLM smoke probe: builds the exact execution messages and, only with
+// --execute on a machine with network access plus the selected profile's
+// API key, performs one live generation through the production adapter.
+// Shares the host configuration loader, selector, defaults, resolver,
+// and adapter factory; never references the FunctionApp assembly.
+// --validate-config checks non-secret structure and reference syntax
+// without requiring the secret or making an API call.
 using System.Text.Json;
 using RecurringTasksBot.Application;
 using RecurringTasksBot.Infrastructure.Configuration;
@@ -69,11 +72,13 @@ static class LlmSmoke
         var environment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Development";
         var config = AppConfiguration.Load(Path.GetFullPath(configDir), environment);
         var execution = AppConfiguration.ReadExecution(config);
-        var provider = AppConfiguration.ReadOpenRouter(config);
-        if (modelOverride is not null)
-            provider = provider with { Model = modelOverride };
+        var selected = AppConfiguration.ReadSelectedLlm(config);
+        if (modelOverride is not null && selected.OpenRouter is not null)
+            selected = selected with { OpenRouter = selected.OpenRouter with { Model = modelOverride } };
+        if (modelOverride is not null && selected.DeepSeek is not null)
+            selected = selected with { DeepSeek = selected.DeepSeek with { Model = modelOverride } };
         execution.Validate();
-        provider.Validate();
+        selected.Defaults.Validate();
         if (execution.RequestTimeout > ExecutionLimits.MaxLlmTimeout)
             throw new InvalidOperationException(
                 "LLM request timeout exceeds the single-activity time budget.");
@@ -118,17 +123,24 @@ static class LlmSmoke
             execution.TargetAnswerTextChars,
             TelegramLimits.RichTextChars,
             execution.SystemInstruction);
+        // Effective search travels into message construction, matching
+        // the production occurrence path.
         var messages = ExecutionMessageBuilder.BuildMessages(
-            instruction, snapshot, memory?.Answer);
+            instruction, snapshot, memory?.Answer, execution.SearchEnabled);
         if (!ContextBudget.FitsBudget(messages, execution, execution.CompletionTokenBudget))
             throw new InvalidOperationException("Smoke prompt does not fit the context budget.");
 
-        var payload = OpenRouterRequestBuilder.BuildRequestJson(provider, execution, messages);
+        var payload = selected.OpenRouter is not null
+            ? OpenRouterRequestBuilder.BuildRequestJson(selected.OpenRouter, execution, messages)
+            : DeepSeekRequestBuilder.BuildRequestJson(selected.DeepSeek!, execution, messages);
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             built = true,
+            profile = selected.ActiveProfile,
+            provider = selected.Provider,
+            model = selected.Model,
             messageCount = messages.Count,
-            model = provider.Model,
+            searchEnabled = execution.SearchEnabled,
             requestCharacters = payload.Length,
             validateConfig,
         }));
@@ -136,30 +148,42 @@ static class LlmSmoke
         if (!execute)
             return 0;
 
-        var apiKey = Environment.GetEnvironmentVariable("RecurringTasksBot__Llm__ApiKey");
-        if (string.IsNullOrEmpty(apiKey))
+        string apiKey;
+        try
         {
-            Console.Error.WriteLine("Missing RecurringTasksBot__Llm__ApiKey for --execute.");
+            apiKey = AppConfiguration.ResolveSelectedApiKey(config, selected);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
             return 2;
         }
 
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        var executor = new OpenRouterLlmExecutor(http, provider, execution, apiKey);
+        var adapter = LlmAdapterFactory.CreateSelected(http, execution, selected, apiKey);
         var valid = true;
+        var sourceCap = selected.OpenRouter?.MaxTotalResults ?? selected.DeepSeek!.MaxTotalResults;
         for (var attempt = 0; attempt < maxRequests; attempt++)
         {
-            var result = await executor.ExecuteAsync(
+            var result = await adapter.Executor.ExecuteAsync(
                 new LlmRequest(messages, maxSourceScalars.Value));
             var plan = DeliveryPlan.CreateInitial("smoke", result.AnswerText);
-            var ok = result.SearchUsed &&
-                result.Sources.Count <= provider.MaxTotalResults &&
-                plan.Leaves.Count > 0;
+            var ok = result.Sources.Count <= sourceCap && plan.Leaves.Count > 0;
+            if (execution.SearchEnabled)
+            {
+                // Citation check, not proof of executed search: the legacy
+                // SearchUsed field is a source-presence indicator. Missing
+                // metadata must not reject an otherwise complete answer
+                // when search is disabled.
+                ok &= result.SearchUsed;
+            }
             valid &= ok;
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 answerCharacters = result.AnswerText.Length,
                 sources = result.Sources.Count,
                 searchUsed = result.SearchUsed,
+                citationCheck = execution.SearchEnabled ? "required" : "skipped (search disabled)",
                 provider = result.Provider,
                 model = result.Model,
                 leaves = plan.Leaves.Count,
@@ -167,8 +191,8 @@ static class LlmSmoke
         }
 
         Console.WriteLine(valid
-            ? "PASS: complete answer, search citations, valid plan leaves"
-            : "FAIL: search/citation or plan checks");
+            ? "PASS: complete answer, valid plan leaves"
+            : "FAIL: answer/plan checks");
         return valid ? 0 : 1;
     }
 }

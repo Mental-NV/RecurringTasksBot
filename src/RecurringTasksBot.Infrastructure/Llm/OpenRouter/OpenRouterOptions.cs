@@ -26,9 +26,9 @@ public sealed record OpenRouterOptions(
             throw new InvalidOperationException("LLM model is not configured.");
         if (string.IsNullOrWhiteSpace(ReasoningEffort))
             throw new InvalidOperationException("LLM reasoning effort is not configured.");
-        if (!SearchEnabled)
-            throw new InvalidOperationException(
-                "LLM web search is disabled by configuration. Scheduled research requires search; refusing to silently run without it.");
+        // Search is a default capability, not a mandatory global setting:
+        // disabled stays disabled for requests without an override, while
+        // an explicit task override can still enable search per occurrence.
         if (string.IsNullOrWhiteSpace(SearchEngine))
             throw new InvalidOperationException("LLM search engine is not configured.");
         if (string.IsNullOrWhiteSpace(SearchMode))

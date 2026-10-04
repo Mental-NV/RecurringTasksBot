@@ -11,14 +11,22 @@ Durable timers only.
 
 ## OIDC and GitHub environment setup
 
-GitHub Environment `production` holds four secrets (storage connection
-string, bot token, webhook secret, LLM key) and variables
+GitHub Environment `production` holds five secrets (storage connection
+string, bot token, webhook secret, OpenRouter LLM key, DeepSeek LLM
+key) and variables
 (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`,
 `AZURE_RESOURCE_GROUP`, `FUNCTION_APP_NAME`, `PRODUCTION_WEBHOOK_URL`).
 No client secret anywhere. Static deployment values (region, plan,
-storage account, table, hub, bot ID) live in
+storage account, table, hub, bot ID, LLM profile selector) live in
 `infra/main.parameters.json`; the resolver merges them with the
-variables and secrets at deploy time.
+variables and secrets at deploy time. The DeepSeek secret input
+(`DEPLOY_DEEPSEEK_API_KEY`, from GitHub secret
+`RecurringTasksBot__Llm__DeepSeek__ApiKey`) is optional until the
+DeepSeek profile is selected: an absent inactive key resolves to an
+empty secure parameter, while the selected profile's key is required.
+Supplied inactive credentials are preserved for rollback, and resolved
+values are never printed. The selector is `DeepSeek` in the parameter
+template; roll back by restoring it to `OpenRouter`.
 
 ## Workflow triggers
 
@@ -52,6 +60,19 @@ steps run only after the gates pass.
 
 The workflow never deletes data, webhooks, or pending updates beyond
 the `setWebhook` registration itself.
+
+## LLM profile rollout
+
+Both credentials are deployed (the inactive one may be empty); only
+the selected profile's key is required at startup. To promote
+DeepSeek after functional validation: drain retained generation work
+(including queued retries), set the `llmActiveProfile` template value
+to `DeepSeek`, redeploy, and monitor completion, errors, and latency.
+Claims freeze prompt and settings but not provider, model, credential,
+or budget, so in-flight work must finish on the old profile first.
+Roll back by restoring the selector to `OpenRouter`; restore any
+shared settings changed for compatibility. Keep both credentials
+available during rollout.
 
 ## Failure handling
 

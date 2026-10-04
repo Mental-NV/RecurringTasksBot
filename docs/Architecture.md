@@ -15,7 +15,8 @@ FunctionApp -> Infrastructure
   `ITelegramTransport` / `ILlmExecutor` contracts. Enforced by
   `ProjectBoundaryTests`.
 - `RecurringTasksBot.Infrastructure` references Application. It owns the
-  Telegram transport, the OpenRouter adapter, Azure Tables persistence,
+  Telegram transport, the OpenRouter and direct DeepSeek adapters (one
+  selected at a time via `Llm:ActiveProfile`), Azure Tables persistence,
   and configuration loading.
 - `RecurringTasksBot.FunctionApp` references both. It owns the HTTP
   webhook, the Durable orchestration/activities, and the DI composition
@@ -83,15 +84,18 @@ remain for the retained data. See [FunctionApp](FunctionApp.md).
 
 Implement `ILlmExecutor.ExecuteAsync`: serialize `LlmRequest.Messages`
 verbatim, enforce `MaxSourceScalars` while accumulating streamed content,
-and map failures to `LlmFailureKind`. Register it in
-`FunctionAppServices.AddFunctionAppServices` next to
-`OpenRouterLlmExecutor`. Scheduling, storage, and Telegram behavior
-do not change.
+and map failures to `LlmFailureKind`. Add the profile's options record
+under `Infrastructure/Llm/<Name>/`, construct it through the shared
+`LlmAdapterFactory.CreateSelected` switch (an explicit two-provider
+switch, not a registry), and add the named profile to the checked-in
+`appsettings.json` plus deployment wiring. Scheduling, storage, and
+Telegram behavior do not change.
 
 ## Non-goals
 
 Replacing Durable Functions or Azure Tables; a different cron library;
-ORM/CQRS/event sourcing; multi-provider support; queues between
+ORM/CQRS/event sourcing; automatic failover and per-task provider
+routing (one profile is selected per host, explicitly); queues between
 generation and delivery; scale/load architecture; web UI; file
 attachments; expanded memory; new commands; provider/model upgrades;
 broad security redesign. See [Backlog](Backlog.md).

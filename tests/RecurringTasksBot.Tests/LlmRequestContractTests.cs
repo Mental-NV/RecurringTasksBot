@@ -100,6 +100,30 @@ public sealed class LlmRequestContractTests
 
 
     [Fact]
+    public async Task SharedSearchDefault_FlowsIntoMessagesAndNullRequestOverride()
+    {
+        var ops = new FakeOperationStore();
+        var sender = new FakeTelegramSender();
+        var llm = new FakeLlmExecutor();
+        var clock = new FakeClock { Now = new DateTimeOffset(Day, TimeSpan.Zero) };
+        ops.Seed(TestRecords.Operation("u1", "op1"));
+        var repo = new FakeOccurrenceRepository(ops, clock);
+        var execution = TestLlm.Execution() with { SearchEnabled = false };
+        var handler = new ExecuteOccurrenceHandler(ops, repo, sender, llm,
+            execution, TestLlm.ProviderName, TestLlm.ModelName, clock);
+
+        var result = await handler.ExecuteAttemptAsync("u1", "op1", Day, 0);
+        Assert.Equal(SingleAttemptOutcome.Sent, result.Outcome);
+
+        // Prompt construction uses the shared default when the occurrence
+        // carries no frozen override; the request leaves the override null
+        // so the adapter applies the same shared default.
+        var request = Assert.Single(llm.Requests);
+        Assert.Null(request.SearchEnabled);
+        Assert.Contains("Web search is disabled", request.Messages[^1].Content);
+    }
+
+    [Fact]
     public void Request_FirstRunHasTwoMessagesWithPreservedSettings()
     {
         var (instruction, snapshot) = Snapshot(false);

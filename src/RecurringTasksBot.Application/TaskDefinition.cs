@@ -35,8 +35,13 @@ public static class TaskMemoryModes
     public const string None = "None";
 }
 
-// One global TaskDefaults section replaces the overlapping memory/reasoning/
-// search settings as their authoritative configuration source.
+// Effective task defaults, derived once at startup from the shared
+// Memory:Mode, Llm:ReasoningEffort, and Llm:SearchEnabled settings (not
+// from a TaskDefaults configuration section, which was removed).
+// Explicit task parameters inherit from this record; already persisted
+// occurrence claims retain their frozen values. Revision is a fingerprint
+// of the effective defaults ("defaults-v2:<sha256>"); legacy revision
+// strings remain readable and are never recomputed for retained claims.
 public sealed record TaskDefaults(string MemoryMode, string ReasoningEffort, bool WebSearch,
     string Revision = "1")
 {

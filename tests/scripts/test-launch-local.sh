@@ -21,7 +21,9 @@ chmod +x "$SHIM/curl"
 export RecurringTasksBot__Telegram__BotToken="dummy"
 export RecurringTasksBot__Telegram__WebhookSecret="dummy-dev-secret-00000000000000000000"
 export RecurringTasksBot__AzureWebJobsStorage="DefaultEndpointsProtocol=https;AccountName=devrecurringtasksbot;AccountKey=Zm9v;EndpointSuffix=core.windows.net"
-export RecurringTasksBot__Llm__ApiKey="dummy-llm-key"
+# No LLM credential is exported: the launcher must reach func start
+# without a fixed OpenRouter key; the shared .NET resolver owns
+# selected-provider validation.
 
 # 1. `func` absent from PATH: must fail with install guidance.
 if PATH="$SHIM:/usr/bin:/bin" bash scripts/launch-local.sh >"$SHIM/out1.txt" 2>&1; then

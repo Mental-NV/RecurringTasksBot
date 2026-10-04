@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # One paid development request through the bot's actual .NET adapter.
 # Uses common + Development JSON profiles and environment overrides.
-# Required: RecurringTasksBot__Llm__ApiKey (never printed).
+# The selected profile is RecurringTasksBot__Llm__ActiveProfile (default
+# OpenRouter); only its credential is required and it is never printed.
+# The shared .NET resolver owns selected-provider validation.
 # Optional: SMOKE_MODEL, SMOKE_PROMPT_FILE (path to a UTF-8 research prompt).
 # No Telegram messages or storage writes. Ordinary CI must not run this.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-if [ -z "${RecurringTasksBot__Llm__ApiKey:-}" ]; then
-  echo "Missing required env var: RecurringTasksBot__Llm__ApiKey" >&2
-  exit 1
-fi
 export FUNCTIONAPP_CONFIG_DIR="$PWD/src/RecurringTasksBot.FunctionApp"
 prompt_args=()
 if [ -n "${SMOKE_PROMPT_FILE:-}" ]; then

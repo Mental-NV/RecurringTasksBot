@@ -48,6 +48,11 @@ and credentials are never exposed. Generation retries (2) are separate
 from delivery retries; `AnswerIncomplete`/`SourceLimit` never retry.
 Classify via `LlmFailureKind` and `TelegramDisposition` (see
 [LLM](LLM.md) and [TelegramTransport](TelegramTransport.md)).
+Receipts carry the selected provider/model per attempt; the active
+profile itself is the `RecurringTasksBot__Llm__ActiveProfile` app
+setting (currently `DeepSeek`). Search-budget
+exhaustion surfaces as terminal `Permanent` with code
+`search_budget_exhausted` — no retry resets the allowance.
 
 ## Leases
 

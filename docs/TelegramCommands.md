@@ -9,7 +9,10 @@ creation).
 Fields: `prompt` (required, 1–32,768 Unicode scalars), `schedule.cron`
 and/or `schedule.once` (at least one, with a future occurrence),
 `timezone`, `parameters.memoryMode` / `reasoningEffort` / `webSearch` /
-`expiresAt` / `maxOccurrences`. Example:
+`expiresAt` / `maxOccurrences`. Omitted generation parameters inherit
+the derived shared defaults (`memoryMode: IncludePreviousMessage`,
+`reasoningEffort: max`, `webSearch: true`); explicit values always win,
+and already-claimed occurrences keep their frozen settings. Example:
 
 ```
 /create {"prompt": "Summarize today's AI news", "schedule": {"cron": "0 0 9 * * *"}, "timezone": "Europe/Moscow"}
@@ -26,7 +29,8 @@ and the next occurrences in local time with the UTC instant alongside.
 ## `/get <task-id> [explicit|effective]`
 
 Shows saved settings (`explicit`, the default) or settings with
-defaults applied (`effective`).
+the current derived defaults applied (`effective`, same values new
+occurrences inherit).
 
 ## `/update <task-id> <JSON patch object>`
 

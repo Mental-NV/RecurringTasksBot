@@ -105,7 +105,7 @@ public sealed class TaskHandlerTests
     {
         var h = new Harness();
         h.Tasks.Seed(TestRecords.Task(owner: "111", id: "a31f9c00aa"));
-        var handler = new TaskGetHandler(h.Tasks, h.Receipts, h.Replies);
+        var handler = new TaskGetHandler(h.Tasks, h.Receipts, h.Replies, TaskDefaults.Default);
         var explicitResult = await handler.HandleGetAsync("111",
             h.Update(text: "/get a31f9c"), "/get a31f9c", Now);
         Assert.Contains("(explicit)", explicitResult.RepliesSent[0]);
@@ -125,7 +125,7 @@ public sealed class TaskHandlerTests
         h.Tasks.Seed(new TaskRecord("111", "a31f9c00aa", 111L,
             Ids.DeriveInstanceId("a31f9c00aa"), definition, 1, TaskState.Active, null,
             Now.UtcDateTime, 0, null, Now.UtcDateTime, Now.UtcDateTime));
-        var handler = new TaskGetHandler(h.Tasks, h.Receipts, h.Replies);
+        var handler = new TaskGetHandler(h.Tasks, h.Receipts, h.Replies, TaskDefaults.Default);
         var result = await handler.HandleGetAsync("111",
             h.Update(text: "/get a31f9c"), "/get a31f9c", Now);
         Assert.Equal(200, result.StatusCode);
@@ -143,7 +143,7 @@ public sealed class TaskHandlerTests
         h.Tasks.Seed(TestRecords.Task(owner: "111", id: "a31f9c00aa"));
         h.Tasks.Seed(TestRecords.Task(owner: "111", id: "dead0000ee", status: TaskState.Deleted));
         h.Tasks.Seed(TestRecords.Task(owner: "222", id: "f001aa00bb"));
-        var handler = new TaskGetHandler(h.Tasks, h.Receipts, h.Replies);
+        var handler = new TaskGetHandler(h.Tasks, h.Receipts, h.Replies, TaskDefaults.Default);
         foreach (var text in new[] { "/get zzz999000", "/get dead0000ee", "/get f001aa00bb" })
         {
             var result = await handler.HandleGetAsync("111", h.Update(text: text), text, Now);

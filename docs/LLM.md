@@ -1,9 +1,21 @@
 # LLM
 
 One contract: `ILlmExecutor.ExecuteAsync(LlmRequest)`. The application
-builds the complete message list; the OpenRouter adapter
-(`OpenRouterLlmExecutor`) serializes it verbatim and never injects a
-second system prompt.
+builds the complete message list; the selected adapter
+(`OpenRouterLlmExecutor` or `DeepSeekLlmExecutor`) serializes it
+verbatim and never injects a second system prompt.
+
+## Profiles and selection
+
+`RecurringTasksBot:Llm:ActiveProfile` selects one named profile from
+`RecurringTasksBot:Llm:Profiles` (see
+[Configuration](Configuration.md)). The selector switches adapter,
+endpoint, model, and credential together through the shared
+`LlmAdapterFactory`; the host and the smoke tool resolve the same
+path. Production selects `DeepSeek`; switching profiles requires
+draining retained generation work first (frozen
+claims keep prompt and settings but not provider, model, credential,
+or budget).
 
 ## Message order and roles
 
@@ -54,15 +66,30 @@ removed only with deleted-operation cleanup.
 
 ## Reasoning and search mapping
 
-`Llm:ReasoningEffort` maps to the request `reasoning.effort` (default
-`Maximum`). Search uses the provider tool (`max_tool_calls` =
+The shared `Llm:ReasoningEffort` (`Maximum`, normalizing to task token
+`max`) maps per adapter. OpenRouter sends `reasoning.effort`
+(`med` → `medium`) with `exclude: true`; direct DeepSeek sends
+`thinking: {type: enabled}` plus `output_config.effort` on its
+low/high/max scale (`med`, `high`, `xhigh` → `high`).
+
+OpenRouter search uses the provider tool (`max_tool_calls` =
 `MaxSearches` 8, up to 5 results per call, 40 total) with
 `engine: parallel`, `mode: fast` (see
 [Configuration](Configuration.md) for overrides, pricing, and
-rollback). These are upper bounds, not required usage; each LLM
-request may issue multiple searches. Fast-mode language coverage is
-unspecified upstream — verify multilingual quality with a live smoke
-check after rollout.
+rollback). DeepSeek search sends one `web_search_20250305` tool with
+`max_uses` = profile `MaxSearches`; per-search and total server
+result-count controls have no DeepSeek equivalent and are never sent.
+These are upper bounds, not required usage; each LLM request may
+issue multiple searches. Fast-mode language coverage is unspecified
+upstream — verify multilingual quality with a live smoke check after
+rollout.
+
+For DeepSeek search responses only the final answer segment after the
+last server-tool/result block is kept; source metadata comes from
+citations on that segment alone (`LlmSource` entries, capped by
+`MaxTotalResults`, same `SearchUsed` source-presence meaning as
+OpenRouter). Model-authored text and inline links are preserved
+without appended citation rendering.
 
 ## Transport and errors
 
@@ -77,12 +104,15 @@ prompts, answers, history, or tokens.
 ## Smoke test
 
 `scripts/smoke-llm-dev.sh` (via `tools/LlmSmoke`) runs one bounded live
-request with the development key: `--prompt`, `--previous-reply`,
-`--model`, `--config-dir`, `--max-source-scalars`, `--max-requests`
-flags, or `SMOKE_PROMPT_FILE` for the prompt file. It verifies a
-current-information answer with source links, reasoning excluded from
-the response, and composition into valid rich-message parts. Prints
-diagnostics/usage only. Ordinary CI makes no live or paid calls.
+request with the selected profile's development key: `--prompt`,
+`--previous-reply`, `--model`, `--config-dir`, `--max-source-scalars`,
+`--max-requests` flags, or `SMOKE_PROMPT_FILE` for the prompt file.
+`--validate-config` checks non-secret structure and reference syntax
+for the selected profile without requiring its key or network access.
+`--execute` verifies a complete answer with valid delivery leaves; the
+citation check applies to search-enabled runs only (a source-presence
+indicator, not proof of executed search). Prints diagnostics/usage
+only. Ordinary CI makes no live or paid calls.
 
 ## Data sent externally
 

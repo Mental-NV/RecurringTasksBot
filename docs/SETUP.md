@@ -6,8 +6,9 @@
 - Two Telegram bots (BotFather) and two Standard GPV2 storage accounts.
 - Non-secret dev IDs filled in `appsettings.Development.json` (bot ID,
   storage name). Production values live in `infra/main.parameters.json`.
-- Four secrets per environment (see [Configuration](Configuration.md)):
-  storage connection string, bot token, webhook secret, OpenRouter key.
+- Secrets per environment (see [Configuration](Configuration.md)):
+  storage connection string, bot token, webhook secret, OpenRouter key,
+  plus the direct DeepSeek key once the DeepSeek profile is selected.
 
 macOS tooling:
 
@@ -26,14 +27,20 @@ is missing.
 export RecurringTasksBot__Telegram__BotToken="<dev-bot-token>"
 export RecurringTasksBot__Telegram__WebhookSecret="<dev-secret>"
 export RecurringTasksBot__AzureWebJobsStorage="<dev-connection-string>"
-export RecurringTasksBot__Llm__ApiKey="<openrouter-key>"
+export RecurringTasksBot__Llm__OpenRouter__ApiKey="<openrouter-key>"
+export RecurringTasksBot__Llm__ActiveProfile="DeepSeek"
 ./scripts/launch-local.sh [--tunnel-url https://<tunnel-host>]
 ```
 
 The script validates the storage account name against the connection
 string, the token against the expected dev bot ID, and the platform hub
 against the dev profile and `infra/environments/development.json`,
-refusing to start on mismatch. Secrets are checked by presence only.
+refusing to start on mismatch. The selected profile's LLM credential
+is validated by the shared .NET resolver at host startup (only the
+selected profile's key is required); the launcher performs no
+fixed-provider key check. Select `DeepSeek` with
+`RecurringTasksBot__Llm__ActiveProfile=DeepSeek` plus
+`RecurringTasksBot__Llm__DeepSeek__ApiKey` once its key is provisioned.
 
 ## Receiving updates: tunnel or polling
 

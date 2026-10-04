@@ -60,7 +60,11 @@ internal sealed class OccurrenceGenerator(
                 PreviousReplyExecutedAtUtc = null,
             }
             : context.ToSnapshot();
-        var searchEnabled = overrides?.SearchEnabled ?? true;
+        // Prompt construction uses the same effective search value as
+        // request serialization: frozen overrides win, otherwise the
+        // shared default. A task with webSearch=false omits search tools;
+        // a task with true enables them even when the default is false.
+        var searchEnabled = overrides?.SearchEnabled ?? options.SearchEnabled;
         var messages = ExecutionMessageBuilder.BuildMessages(
             context.EffectiveSystemInstruction, snapshot, previous, searchEnabled);
         if (!ContextBudget.FitsBudget(messages, options, options.CompletionTokenBudget))

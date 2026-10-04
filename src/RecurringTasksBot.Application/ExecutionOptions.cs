@@ -1,8 +1,11 @@
 // Owned execution options: memory and context/answer budgets plus the
 // generation time/retry/instruction knobs the occurrence handler consumes.
-// Provider transport settings live in OpenRouterOptions (Infrastructure);
-// the host composes both. Malformed explicit values fail at load time;
-// code defaults apply only when a key is absent.
+// Provider transport settings live in the Infrastructure profile options;
+// the host composes both. SearchEnabled here is the shared web-search
+// default (from Llm:SearchEnabled): frozen occurrence overrides win, and
+// adapters fall back to it when a request carries no override.
+// Malformed explicit values fail at load time; code defaults apply only
+// when a key is absent.
 namespace RecurringTasksBot.Application;
 
 public sealed record ExecutionOptions(
@@ -15,7 +18,8 @@ public sealed record ExecutionOptions(
     TimeSpan RequestTimeout,
     int CompletionTokenBudget,
     int GenerationRetries,
-    string SystemInstruction)
+    string SystemInstruction,
+    bool SearchEnabled = true)
 {
     public const string PreviousSuccessfulReply = "PreviousSuccessfulReply";
     public const string None = "None";

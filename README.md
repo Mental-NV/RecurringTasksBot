@@ -18,7 +18,8 @@ Quick start (local, development bot only):
 export RecurringTasksBot__Telegram__BotToken="<dev-bot-token>"
 export RecurringTasksBot__Telegram__WebhookSecret="<dev-secret>"
 export RecurringTasksBot__AzureWebJobsStorage="<dev-connection-string>"
-export RecurringTasksBot__Llm__ApiKey="<openrouter-key>"
+export RecurringTasksBot__Llm__OpenRouter__ApiKey="<openrouter-key>"
+export RecurringTasksBot__Llm__ActiveProfile="DeepSeek"
 ./scripts/launch-local.sh
 ./scripts/poll-dev.sh
 ```
@@ -30,8 +31,9 @@ Project map:
 
 - `src/RecurringTasksBot.Application/` — scheduling, commands, generation
   and delivery logic. No Azure or Telegram SDKs.
-- `src/RecurringTasksBot.Infrastructure/` — Telegram transport, OpenRouter
-  LLM adapter, Azure Tables persistence, configuration loading.
+- `src/RecurringTasksBot.Infrastructure/` — Telegram transport, LLM
+  adapters (OpenRouter, direct DeepSeek; one selected per host), Azure
+  Tables persistence, configuration loading.
 - `src/RecurringTasksBot.FunctionApp/` — Functions host: webhook endpoint,
   Durable orchestration, DI composition root.
 - `tools/LlmSmoke/` — bounded live LLM smoke test (opt-in, uses a paid key).

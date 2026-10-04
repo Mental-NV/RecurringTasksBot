@@ -22,26 +22,30 @@ public static class FunctionAppServices
     {
         var execution = AppConfiguration.ReadExecution(config);
         execution.Validate();
-        var provider = AppConfiguration.ReadOpenRouter(config);
-        provider.Validate();
+        var selected = AppConfiguration.ReadSelectedLlm(config);
+        selected.Defaults.Validate();
+        // The selected provider connection is validated here at startup,
+        // not on first adapter resolution: invalid limits fail the host
+        // before any registration completes.
+        selected.OpenRouter?.Validate();
+        selected.DeepSeek?.Validate();
         if (execution.RequestTimeout > ExecutionLimits.MaxLlmTimeout)
             throw new InvalidOperationException(
                 "LLM request timeout exceeds the single-activity time budget.");
         var storage = AppConfiguration.ReadTableStorage(config);
         var telegram = AppConfiguration.ReadTelegram(config);
-        var taskDefaults = AppConfiguration.ReadTaskDefaults(config);
 
-        // The LLM credential is validated by presence only: values are never
-        // printed, and no paid API calls happen at startup or in ordinary CI.
-        var llmApiKey = config["RecurringTasksBot:Llm:ApiKey"];
-        if (string.IsNullOrEmpty(llmApiKey))
-            throw new InvalidOperationException("Missing required configuration value: 'RecurringTasksBot:Llm:ApiKey'.");
+        // The selected profile credential is validated by presence only:
+        // values are never printed, and no paid API calls happen at
+        // startup or in ordinary CI. Only the selected profile's
+        // reference is resolved; inactive profiles need no secret.
+        var llmApiKey = AppConfiguration.ResolveSelectedApiKey(config, selected);
 
         services.AddSingleton(execution);
-        services.AddSingleton(provider);
+        services.AddSingleton(selected);
+        services.AddSingleton(selected.Defaults);
         services.AddSingleton(storage);
         services.AddSingleton(telegram);
-        services.AddSingleton(taskDefaults);
         services.AddSingleton<TableClients>();
         services.AddSingleton<IOccurrenceRepository, TableOccurrenceRepository>();
         services.AddSingleton<ITaskStore, TableTaskStore>();
@@ -52,8 +56,8 @@ public static class FunctionAppServices
                 p.GetRequiredService<ITelegramTransport>(),
                 p.GetRequiredService<ILlmExecutor>(),
                 execution,
-                provider.Provider,
-                provider.Model,
+                selected.Provider,
+                selected.Model,
                 TimeProvider.System,
                 logger: p.GetRequiredService<ILogger<TaskOccurrenceRunner>>()));
         services.AddSingleton<IUpdateReceiptStore, TableUpdateReceiptStore>();
@@ -62,15 +66,13 @@ public static class FunctionAppServices
         {
             client.Timeout = Timeout.InfiniteTimeSpan; // per-request timeout applies
         });
-        services.AddSingleton<OpenRouterLlmExecutor>(p =>
-            new OpenRouterLlmExecutor(
+        services.AddSingleton<ILlmExecutor>(p =>
+            LlmAdapterFactory.CreateSelected(
                 p.GetRequiredService<IHttpClientFactory>().CreateClient(
                     nameof(ILlmExecutor)),
-                provider,
                 execution,
-                llmApiKey));
-        services.AddSingleton<ILlmExecutor>(p =>
-            p.GetRequiredService<OpenRouterLlmExecutor>());
+                selected,
+                llmApiKey).Executor);
         // The Durable client exists only per invocation, so the
         // recurrence adapter is created through this small explicit
         // factory instead of constructor injection.

@@ -165,50 +165,90 @@ public sealed class FunctionHostTests
     [Fact]
     public async Task FunctionsHost_BuildsAndResolvesEveryEntryPoint()
     {
-        // Valid test configuration through the production readers: fake
-        // secrets by presence only, never used for network calls.
+        // Valid test configuration through the production readers: the
+        // selected profile carries a whole-value reference to a
+        // test-only environment variable, never a literal secret, and no
+        // network calls happen.
+        const string testKeyVariable = "FUNCTIONAPP_TEST_LLM_KEY";
+        var previousKey = Environment.GetEnvironmentVariable(testKeyVariable);
+        Environment.SetEnvironmentVariable(testKeyVariable, "test-api-key");
+        try
+        {
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["RecurringTasksBot:AzureWebJobsStorage"] = "UseDevelopmentStorage=true",
+                    ["RecurringTasksBot:Telegram:BotToken"] = "test-bot-token",
+                    ["RecurringTasksBot:Telegram:WebhookSecret"] = "test-webhook-secret",
+                    ["RecurringTasksBot:Llm:ActiveProfile"] = "OpenRouter",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:Provider"] = "OpenRouter",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:BaseUrl"] = "https://openrouter.ai/api/v1",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:Model"] = "deepseek/deepseek-v4.1-flash",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:ApiKey"] = "%FUNCTIONAPP_TEST_LLM_KEY%",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:SearchEngine"] = "parallel",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:SearchMode"] = "fast",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:MaxSearches"] = "2",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:MaxResultsPerSearch"] = "5",
+                    ["RecurringTasksBot:Llm:Profiles:OpenRouter:MaxTotalResults"] = "10",
+                })
+                .Build();
+
+            using var host = new HostBuilder()
+                .ConfigureFunctionsWorkerDefaults()
+                .ConfigureServices(services =>
+                {
+                    services.AddFunctionAppServices(config);
+                    // External I/O and network stay faked: table clients and
+                    // stores, the Telegram/LLM transports. Everything else —
+                    // options, defaults, runners, handlers, the Durable client
+                    // factory — resolves through the production registrations.
+                    Remove<TableClients>(services);
+                    Replace<ITaskStore>(services, new FakeTaskStore());
+                    var operations = new FakeOperationStore();
+                    Replace<IOperationStore>(services, operations);
+                    Replace<IOccurrenceRepository>(services,
+                        new FakeOccurrenceRepository(operations, new FakeClock()));
+                    Replace<IUpdateReceiptStore>(services, new FakeReceiptStore());
+                    Replace<ITelegramTransport>(services, new FakeTelegramSender());
+                    Replace<ILlmExecutor>(services, new FakeLlmExecutor());
+                })
+                .Build();
+
+            // Production configuration flows into the container untouched.
+            Assert.Equal(AppConfiguration.ReadSelectedLlm(config).Defaults,
+                host.Services.GetRequiredService<TaskDefaults>());
+
+            // The worker activates function classes from DI without
+            // requiring their registration: every declared entry point's
+            // class must construct through the same mechanism.
+            foreach (var type in EntryPoints().Select(e => e.Type).Distinct())
+                Assert.IsType(type, ActivatorUtilities.CreateInstance(host.Services, type));
+            await host.StopAsync();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(testKeyVariable, previousKey);
+        }
+    }
+
+    [Fact]
+    public void AddServices_ValidatesSelectedProviderOptionsAtStartup()
+    {
+        // Invalid provider limits fail during configuration loading, not
+        // on first lazy adapter resolution.
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["RecurringTasksBot:AzureWebJobsStorage"] = "UseDevelopmentStorage=true",
-                ["RecurringTasksBot:Telegram:BotToken"] = "test-bot-token",
-                ["RecurringTasksBot:Telegram:WebhookSecret"] = "test-webhook-secret",
-                ["RecurringTasksBot:Llm:ApiKey"] = "test-api-key",
+                ["RecurringTasksBot:Llm:ActiveProfile"] = "OpenRouter",
+                ["RecurringTasksBot:Llm:Profiles:OpenRouter:Provider"] = "OpenRouter",
+                ["RecurringTasksBot:Llm:Profiles:OpenRouter:BaseUrl"] = "https://openrouter.ai/api/v1",
+                ["RecurringTasksBot:Llm:Profiles:OpenRouter:Model"] = "deepseek/deepseek-v4.1-flash",
+                ["RecurringTasksBot:Llm:Profiles:OpenRouter:ApiKey"] = "%FUNCTIONAPP_TEST_LLM_KEY%",
+                ["RecurringTasksBot:Llm:Profiles:OpenRouter:MaxSearches"] = "0",
             })
             .Build();
-
-        using var host = new HostBuilder()
-            .ConfigureFunctionsWorkerDefaults()
-            .ConfigureServices(services =>
-            {
-                services.AddFunctionAppServices(config);
-                // External I/O and network stay faked: table clients and
-                // stores, the Telegram/LLM transports. Everything else —
-                // options, defaults, runners, handlers, the Durable client
-                // factory — resolves through the production registrations.
-                Remove<TableClients>(services);
-                Replace<ITaskStore>(services, new FakeTaskStore());
-                var operations = new FakeOperationStore();
-                Replace<IOperationStore>(services, operations);
-                Replace<IOccurrenceRepository>(services,
-                    new FakeOccurrenceRepository(operations, new FakeClock()));
-                Replace<IUpdateReceiptStore>(services, new FakeReceiptStore());
-                Replace<ITelegramTransport>(services, new FakeTelegramSender());
-                Remove<OpenRouterLlmExecutor>(services);
-                Replace<ILlmExecutor>(services, new FakeLlmExecutor());
-            })
-            .Build();
-
-        // Production configuration flows into the container untouched.
-        Assert.Equal(AppConfiguration.ReadTaskDefaults(config),
-            host.Services.GetRequiredService<TaskDefaults>());
-
-        // The worker activates function classes from DI without
-        // requiring their registration: every declared entry point's
-        // class must construct through the same mechanism.
-        foreach (var type in EntryPoints().Select(e => e.Type).Distinct())
-            Assert.IsType(type, ActivatorUtilities.CreateInstance(host.Services, type));
-        await host.StopAsync();
+        Assert.Throws<InvalidOperationException>(() =>
+            new ServiceCollection().AddFunctionAppServices(config));
     }
 
     private static void Remove<TService>(IServiceCollection services)

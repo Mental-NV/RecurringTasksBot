@@ -14,7 +14,16 @@ fail startup; code defaults apply only when a key is absent.
 | `RecurringTasksBot:AzureWebJobsStorage` | Storage connection string (business + Durable + content) |
 | `RecurringTasksBot:Telegram:BotToken` | Bot token from BotFather |
 | `RecurringTasksBot:Telegram:WebhookSecret` | Webhook secret header value, 32–64 chars `A–Z a–z 0–9 _ -` |
-| `RecurringTasksBot:Llm:ApiKey` | OpenRouter key for execution and search |
+| `RecurringTasksBot__Llm__OpenRouter__ApiKey` | OpenRouter key (selected unless the profile selector changes) |
+| `RecurringTasksBot__Llm__DeepSeek__ApiKey` | Direct DeepSeek key (only required when the DeepSeek profile is selected) |
+
+Profile credentials are whole-value `%ENVIRONMENT_VARIABLE_NAME%`
+references in the profile `ApiKey` field, resolved once at startup
+against these exact variable names. Only
+the selected profile's reference is resolved: an OpenRouter-only
+deployment starts without a DeepSeek key, and vice versa. Literal keys
+in JSON are invalid; missing, empty, or whitespace-only values fail
+startup before any provider call.
 
 ## Runtime profiles (`FunctionApp/appsettings*.json`)
 
@@ -26,9 +35,8 @@ fail startup; code defaults apply only when a key is absent.
 | `RecurringTasksBot:ExpectedBotId` | `launch-local.sh` bot guard; dev `/poll` / webhook guards | Dev bot ID (production canonical in the parameter template) |
 | `RecurringTasksBot:WebhookUrl` | Dev profile only: recorded tunnel URL | Local tunnel URL |
 | `RecurringTasksBot:Memory:Mode` | `ExecutionOptions` | `PreviousSuccessfulReply` (`None` disables) |
-| `RecurringTasksBot:Llm:Provider` / `BaseUrl` | `OpenRouterOptions` | `OpenRouter` / `https://openrouter.ai/api/v1` |
-| `RecurringTasksBot:Llm:Model` | `OpenRouterOptions` | `deepseek/deepseek-v4.1-flash` |
-| `RecurringTasksBot:Llm:ReasoningEffort` | `OpenRouterOptions` | `Maximum` |
+| `RecurringTasksBot:Llm:ActiveProfile` | Selector (see below) | `OpenRouter` |
+| `RecurringTasksBot:Llm:ReasoningEffort` | Shared default → derived task default | `Maximum` (normalizes to task token `max`) |
 | `RecurringTasksBot:Llm:RequestTimeoutSeconds` | `ExecutionOptions` | `480` (startup-enforced under the 510s activity budget) |
 | `RecurringTasksBot:Llm:CompletionTokenBudget` | `ExecutionOptions` | `131072` |
 | `RecurringTasksBot:Llm:TargetAnswerTextChars` | `ExecutionOptions` | `24000` (≤ 32768 rich-text ceiling) |
@@ -37,9 +45,37 @@ fail startup; code defaults apply only when a key is absent.
 | `RecurringTasksBot:Llm:SearchContextReserveTokens` | `ExecutionOptions` | `65536` |
 | `RecurringTasksBot:Llm:ContextEnvelopeReserveTokens` | `ExecutionOptions` | `8192` |
 | `RecurringTasksBot:Llm:GenerationRetries` | `ExecutionOptions` | `2` |
-| `RecurringTasksBot:Llm:SearchEnabled` / `SearchEngine` / `SearchMode` | `OpenRouterOptions` | `true` / `parallel` / `fast` |
-| `RecurringTasksBot:Llm:MaxSearches` / `MaxResultsPerSearch` / `MaxTotalResults` | `OpenRouterOptions` | `8` / `5` / `40` |
+| `RecurringTasksBot:Llm:SearchEnabled` | Shared default → derived task default | `true` |
 | `RecurringTasksBot:Llm:SystemInstruction` | `ExecutionOptions` | `""` (appended to the system template) |
+
+## LLM profiles
+
+Provider connections live in named profiles under
+`RecurringTasksBot:Llm:Profiles`; `RecurringTasksBot:Llm:ActiveProfile`
+selects one. Switching the selector switches adapter, endpoint, model,
+and credential together. Shared task defaults and execution budgets stay
+at their existing paths and apply to whichever profile is selected.
+
+| Profile | Provider | BaseUrl | Model | Search controls |
+| --- | --- | --- | --- | --- |
+| `OpenRouter` | `OpenRouter` | `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4.1-flash` | `SearchEngine` `parallel`, `SearchMode` `fast`, `MaxSearches` 8, `MaxResultsPerSearch` 5, `MaxTotalResults` 40 |
+| `DeepSeek` | `DeepSeek` | `https://api.deepseek.com/anthropic` | `deepseek-flash` | `MaxSearches` 8, `MaxTotalResults` 40 (local source cap only) |
+
+`Provider` is the adapter discriminator (`OpenRouter` / `DeepSeek`).
+Profile-level copies of shared settings (`ReasoningEffort`,
+`SearchEnabled`) are rejected, as are OpenRouter-only search options in
+a DeepSeek profile. The removed `TaskDefaults` section and root
+provider connection keys (`Llm:Provider`, `BaseUrl`, `Model`,
+`SearchEngine`, `SearchMode`, `MaxSearches`, `MaxResultsPerSearch`,
+`MaxTotalResults`) fail startup with a migration error; only the two
+credential-source paths (`Llm:OpenRouter:ApiKey`, `Llm:DeepSeek:ApiKey`)
+may appear at the root via the environment.
+
+Task defaults derive from `Memory:Mode`, `Llm:ReasoningEffort`, and
+`Llm:SearchEnabled`: currently `IncludePreviousMessage`, `max`, `true`.
+The derived revision (`defaults-v2:<sha256>`) fingerprints those three
+values; explicit task parameters and frozen occurrence claims always win
+over it.
 
 There is no `appsettings.Production.json`: every production value above
 lives once in `infra/main.parameters.json` and reaches the host through
@@ -47,11 +83,11 @@ Bicep-provisioned app settings.
 
 ## Web search engine and mode
 
-Outbound search uses the OpenRouter `openrouter:web_search` server
-tool with `engine: parallel`, `mode: fast` (serialized at
+The OpenRouter profile uses the `openrouter:web_search` server tool
+with `engine: parallel`, `mode: fast` (serialized at
 `tools[0].parameters`). Environment overrides are
-`RecurringTasksBot__Llm__SearchEngine` and
-`RecurringTasksBot__Llm__SearchMode`. Pricing assumption (verified
+`RecurringTasksBot__Llm__Profiles__OpenRouter__SearchEngine` and
+`RecurringTasksBot__Llm__Profiles__OpenRouter__SearchMode`. Pricing assumption (verified
 2026-09-27): Parallel `fast`/`turbo` cost $0.001/search covering up
 to 10 results per search; additional results cost $0.001 each, and
 retries can create additional billable requests. Fast-mode language
@@ -61,9 +97,14 @@ requires a live check after rollout. Rollback: set
 mode). Production has no JSON profile; deploy these as app settings:
 
 ```text
-RecurringTasksBot__Llm__SearchEngine=parallel
-RecurringTasksBot__Llm__SearchMode=fast
+RecurringTasksBot__Llm__Profiles__OpenRouter__SearchEngine=parallel
+RecurringTasksBot__Llm__Profiles__OpenRouter__SearchMode=fast
 ```
+
+The DeepSeek profile uses native server search
+(`web_search_20250305`, `max_uses` = profile `MaxSearches`) with no
+engine/mode/result-count options; `MaxTotalResults` caps extracted
+source metadata locally and is never sent as a search option.
 
 ## Platform and deployment settings
 

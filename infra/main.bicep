@@ -29,9 +29,16 @@ param telegramBotToken string
 @secure()
 param telegramWebhookSecret string
 
-@description('LLM API key (secret): OpenRouter key used for DeepSeek execution and web search.')
+@description('LLM API key (secret): OpenRouter key for the OpenRouter profile.')
 @secure()
 param llmApiKey string
+
+@description('LLM API key (secret): direct DeepSeek key for the DeepSeek profile. May be empty while the inactive credential is not provisioned.')
+@secure()
+param deepSeekApiKey string = ''
+
+@description('Selected LLM profile (non-secret): switches the complete provider connection together.')
+param llmActiveProfile string = 'OpenRouter'
 
 @description('Durable task hub for the current state. Must match the selected environment file taskHubName.')
 param taskHubName string
@@ -105,8 +112,16 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
           value: telegramWebhookSecret
         }
         {
-          name: 'RecurringTasksBot__Llm__ApiKey'
+          name: 'RecurringTasksBot__Llm__OpenRouter__ApiKey'
           value: llmApiKey
+        }
+        {
+          name: 'RecurringTasksBot__Llm__DeepSeek__ApiKey'
+          value: deepSeekApiKey
+        }
+        {
+          name: 'RecurringTasksBot__Llm__ActiveProfile'
+          value: llmActiveProfile
         }
         // Non-secret LLM options come from the published appsettings profiles.
         {

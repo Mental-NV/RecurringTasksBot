@@ -71,7 +71,7 @@ jobs:
           params = json.load(open(sys.argv[1]))["parameters"]
           for name in ["location", "functionAppName", "planName",
                        "storageAccountName", "taskHubName", "tableName",
-                       "expectedBotId", "webhookUrl"]:
+                       "expectedBotId", "webhookUrl", "llmActiveProfile"]:
               value = params[name]["value"]
               print(f"{name}: {'<supplied at deploy time>' if value.startswith('__') else value}")
           EOF
@@ -91,7 +91,8 @@ jobs:
           DEPLOY_STORAGE_CONNECTION_STRING: ${{ secrets.RecurringTasksBot__AzureWebJobsStorage }}
           DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.RecurringTasksBot__Telegram__BotToken }}
           DEPLOY_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
-          DEPLOY_LLM_API_KEY: ${{ secrets.RecurringTasksBot__Llm__ApiKey }}
+          DEPLOY_LLM_API_KEY: ${{ secrets.RecurringTasksBot__Llm__OpenRouter__ApiKey }}
+          DEPLOY_DEEPSEEK_API_KEY: ${{ secrets.RecurringTasksBot__Llm__DeepSeek__ApiKey }}
       - name: Deploy infrastructure (existing storage account)
         uses: azure/arm-deploy@v2
         with:

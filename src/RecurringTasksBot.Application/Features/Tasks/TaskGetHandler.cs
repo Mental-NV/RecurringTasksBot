@@ -7,9 +7,9 @@ public sealed class TaskGetHandler(
     ITaskStore tasks,
     IUpdateReceiptStore receipts,
     BotReplySender replies,
-    TaskDefaults? taskDefaults = null)
+    TaskDefaults taskDefaults)
 {
-    private TaskDefaults Globals => taskDefaults ?? TaskDefaults.Default;
+    private TaskDefaults Globals => taskDefaults;
 
     public async Task<ProcessResult> HandleGetAsync(
         string ownerId, IncomingUpdate update, string text, DateTimeOffset nowUtc,

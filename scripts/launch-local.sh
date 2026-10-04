@@ -19,7 +19,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for v in RecurringTasksBot__Telegram__BotToken RecurringTasksBot__Telegram__WebhookSecret RecurringTasksBot__AzureWebJobsStorage RecurringTasksBot__Llm__ApiKey; do
+# The selected LLM profile credential is validated by the shared .NET
+# resolver at host startup (RecurringTasksBot__Llm__ActiveProfile selects
+# the profile; only its key is required). Shell must not re-implement
+# profile/macro parsing with a fixed OpenRouter-key requirement here.
+for v in RecurringTasksBot__Telegram__BotToken RecurringTasksBot__Telegram__WebhookSecret RecurringTasksBot__AzureWebJobsStorage; do
   if [ -z "${!v:-}" ]; then echo "Missing required env var: $v" >&2; exit 1; fi
 done
 
