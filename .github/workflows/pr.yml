@@ -19,3 +19,6 @@ jobs:
         run: |
           bash tests/scripts/test-launch-local.sh
           bash tests/scripts/test-deploy-config.sh
+          bash tests/scripts/test-monitoring.sh
+      - name: Compile infrastructure (no Azure credentials)
+        run: az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"

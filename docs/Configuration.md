@@ -116,6 +116,18 @@ source metadata locally and is never sent as a search option.
 | `infra/environments/development.json` | Operator scripts | Region, resource group, dev storage account; the `--env dev` credential guard reads the account from here |
 | `infra/environments/production.json` | Reference only | Azure IDs, resource group, region (production values are canonical in the parameter template) |
 | `infra/main.parameters.json` | Deployment (sole template) | Static values plus `__PLACEHOLDER__`s for externally supplied values; `resolve-deploy-parameters.sh` fills them from GitHub vars/secrets into a temp file passed to Bicep, which provisions the runtime app settings from it |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Functions host; provisioned by `infra/main.bicep` | Connection to the component created by the monitoring module; never emitted as a deployment output |
+| `AzureFunctionsJobHost__logging__logLevel__*` | Functions host; production Bicep settings | Default Warning; `Host.Results`, `Host.Aggregator`, and `Function` Information retain executions, aggregates, and application logs |
+| `AzureFunctionsJobHost__logging__applicationInsights__samplingSettings__*` | Functions host; production Bicep settings | Adaptive sampling enabled, target 2 items/second, `Request;Exception` excluded; this is not a byte-rate cap |
+| `SCALE_CONTROLLER_LOGGING_ENABLED` | Functions scale controller | `AppInsights:None` by default; temporary `AppInsights:Verbose` captures are described in [Monitoring](Monitoring.md) |
+
+Monitoring deployment parameters are `monitoringWorkspaceName`,
+`applicationInsightsName`, `monitoringActionGroupName`, `monitoringAlertEmail`,
+`queuePollingErrorThreshold` (100 errors/hour), and `monitoringDailyCapGb`
+(`"0.1"`, a JSON number string for the fractional quota). The email placeholder
+is filled from the `MONITORING_ALERT_EMAIL` GitHub environment variable. Bicep
+owns the workspace cap; `configure-monitoring.sh` sets the component cap and
+verifies both. See [Deployment](Deployment.md) for the deployment sequence.
 
 ## Protocol constants vs settings
 

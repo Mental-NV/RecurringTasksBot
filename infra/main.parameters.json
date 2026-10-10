@@ -15,6 +15,12 @@
     "telegramWebhookSecret": { "value": "__TELEGRAM_WEBHOOK_SECRET__" },
     "llmApiKey": { "value": "__LLM_API_KEY__" },
     "deepSeekApiKey": { "value": "__DEEPSEEK_API_KEY__" },
-    "llmActiveProfile": { "value": "DeepSeek" }
+    "llmActiveProfile": { "value": "DeepSeek" },
+    "monitoringWorkspaceName": { "value": "law-recurringtasks-prod" },
+    "applicationInsightsName": { "value": "appi-recurringtasks-prod" },
+    "monitoringActionGroupName": { "value": "ag-recurringtasks-monitoring" },
+    "monitoringAlertEmail": { "value": "__MONITORING_ALERT_EMAIL__" },
+    "queuePollingErrorThreshold": { "value": 100 },
+    "monitoringDailyCapGb": { "value": "0.1" }
   }
 }

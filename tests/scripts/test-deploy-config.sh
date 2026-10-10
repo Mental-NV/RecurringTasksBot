@@ -31,7 +31,7 @@ grep -q 'secrets\.RecurringTasksBot__Llm__DeepSeek__ApiKey' "$WF" \
 grep -q "path: ./app.zip" "$WF" || fail "artifact upload is not the prebuilt zip"
 grep -q "path: ./publish$" "$WF" && fail "publish directory uploaded directly (drops hidden dirs)"
 for v in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
-    AZURE_RESOURCE_GROUP FUNCTION_APP_NAME PRODUCTION_WEBHOOK_URL; do
+    AZURE_RESOURCE_GROUP FUNCTION_APP_NAME PRODUCTION_WEBHOOK_URL MONITORING_ALERT_EMAIL; do
   grep -q "vars.$v" "$WF" || fail "workflow ignores GitHub variable $v"
 done
 echo "PASS: single-flow operator workflow uses vars and a params file"
@@ -49,7 +49,7 @@ for s in scripts/operator-cleanup.sh scripts/operator-recover.sh \
     scripts/poll-dev.sh scripts/register-webhook-dev.sh; do
   grep -q "main.parameters.json" "$s" || fail "$s does not read the canonical template for prod"
 done
-for p in functionAppName webhookUrl storageConnectionString telegramBotToken \
+for p in functionAppName webhookUrl monitoringAlertEmail storageConnectionString telegramBotToken \
     telegramWebhookSecret llmApiKey deepSeekApiKey; do
   v=$(py "$p")
   case "$v" in
@@ -74,6 +74,7 @@ echo "PASS: parameter template carries statics and placeholders"
 # structural checks.
 export FUNCTION_APP_NAME="func-fixture"
 export PRODUCTION_WEBHOOK_URL="https://func-fixture.azurewebsites.net/api/webhook"
+export MONITORING_ALERT_EMAIL="monitoring-fixture@example.com"
 export DEPLOY_STORAGE_CONNECTION_STRING='Account=fixture;Key="a\b;c"'
 export DEPLOY_TELEGRAM_BOT_TOKEN="fixture-bot-token"
 export DEPLOY_TELEGRAM_WEBHOOK_SECRET="fixture-webhook-secret"
@@ -94,6 +95,7 @@ import json, sys
 params = json.load(open(sys.argv[1]))["parameters"]
 assert params["functionAppName"]["value"] == "func-fixture"
 assert params["webhookUrl"]["value"] == "https://func-fixture.azurewebsites.net/api/webhook"
+assert params["monitoringAlertEmail"]["value"] == "monitoring-fixture@example.com"
 assert params["storageConnectionString"]["value"] == 'Account=fixture;Key="a\\b;c"'
 assert params["telegramBotToken"]["value"] == "fixture-bot-token"
 assert params["tableName"]["value"] == "RecurringTaskDataV5"
@@ -180,6 +182,23 @@ export DEPLOY_LLM_API_KEY="fixture-llm-key"
 if FUNCTION_APP_NAME="" bash scripts/resolve-deploy-parameters.sh --out /tmp/should-not-exist.json 2>/dev/null; then
   fail "resolver accepts missing variables"
 fi
+if MONITORING_ALERT_EMAIL="" bash scripts/resolve-deploy-parameters.sh --out /tmp/should-not-exist.json 2>/dev/null; then
+  fail "resolver accepts a missing monitoring email"
+fi
+if MONITORING_ALERT_EMAIL="not-an-email" bash scripts/resolve-deploy-parameters.sh --out /tmp/should-not-exist.json 2>/dev/null; then
+  fail "resolver accepts an invalid monitoring email"
+fi
+BAD_CAP_TEMPLATE="$(mktemp)"
+python3 - "$TEMPLATE" "$BAD_CAP_TEMPLATE" <<'EOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["parameters"]["monitoringDailyCapGb"]["value"] = "-1"
+json.dump(doc, open(sys.argv[2], "w"))
+EOF
+if bash scripts/resolve-deploy-parameters.sh --template "$BAD_CAP_TEMPLATE" --out /tmp/should-not-exist.json 2>/dev/null; then
+  fail "resolver permits unlimited monitoring ingestion before infrastructure deployment"
+fi
+rm -f "$BAD_CAP_TEMPLATE"
 echo "PASS: resolver fills placeholders without leaking values"
 
 # 4. Archive contents: publish, zip as the workflow does, inspect.

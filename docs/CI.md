@@ -8,6 +8,8 @@ dotnet build RecurringTasksBot.sln --configuration Release --no-restore
 dotnet test RecurringTasksBot.sln --configuration Release --no-build
 bash tests/scripts/test-launch-local.sh
 bash tests/scripts/test-deploy-config.sh
+bash tests/scripts/test-monitoring.sh
+az bicep build --file infra/main.bicep --outfile /tmp/recurringtasksbot-infra.json
 dotnet build tools/LlmSmoke/LlmSmoke.csproj --configuration Release
 dotnet publish src/RecurringTasksBot.FunctionApp/RecurringTasksBot.FunctionApp.csproj \
   --configuration Release --no-restore --output /tmp/recurringtasksbot-phase4-publish
@@ -25,6 +27,10 @@ dotnet publish src/RecurringTasksBot.FunctionApp/RecurringTasksBot.FunctionApp.c
   target/credential guards
   (workflow triggers, name consistency, hub resolution, operator
   targets).
+- `test-monitoring.sh` runs the post-deployment CLI step against a strict `az`
+  shim: repeatable updates, mismatched/missing caps, CLI failures, and credential
+  redaction. It does not call Azure. Bicep compilation validates the resource
+  definitions without deploying them.
 
 ## Fake vs live coverage
 
@@ -36,7 +42,9 @@ not presented as live verification.
 
 ## Gates
 
-- Pull requests (`pr.yml`): Release build, full suite, both script
-  tests.
-- Production deployment (`deploy-production.yml`): manual dispatch;
-  offline gates re-run before any cloud change.
+- Pull requests (`pr.yml`): Release build, full suite, three script
+  tests, and Bicep compilation.
+- Production deployment (`deploy-production.yml`): pushes to `master` excluding
+  docs-only changes, or manual dispatch; offline gates re-run before any cloud
+  change. Cap verification after infrastructure deployment must pass before the
+  app package is deployed.

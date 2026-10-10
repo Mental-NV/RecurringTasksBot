@@ -12,6 +12,8 @@ copying configuration tables or procedures.
   failure handling.
 - [Runbook](Runbook.md) — diagnostics, stranded starts, delivery/LLM
   failures, leases, cleanup/dry-run/retention, restart recovery.
+- [Monitoring](Monitoring.md) — metric/log checks and temporary queue and
+  scale-controller diagnostic captures; deployment setup is in Deployment.
 - [CI](CI.md) — offline commands, test organization, gates.
 
 ## Understand

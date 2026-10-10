@@ -6,7 +6,7 @@
 # Usage: ./scripts/resolve-deploy-parameters.sh [--template PATH] --out PATH
 #
 # Required env (names only are ever reported):
-#   FUNCTION_APP_NAME, PRODUCTION_WEBHOOK_URL,
+#   FUNCTION_APP_NAME, PRODUCTION_WEBHOOK_URL, MONITORING_ALERT_EMAIL,
 #   DEPLOY_STORAGE_CONNECTION_STRING, DEPLOY_TELEGRAM_BOT_TOKEN,
 #   DEPLOY_TELEGRAM_WEBHOOK_SECRET, DEPLOY_LLM_API_KEY
 # Optional env:
@@ -40,7 +40,7 @@ case "$SELECTOR" in
 esac
 
 missing=""
-for v in FUNCTION_APP_NAME PRODUCTION_WEBHOOK_URL DEPLOY_STORAGE_CONNECTION_STRING \
+for v in FUNCTION_APP_NAME PRODUCTION_WEBHOOK_URL MONITORING_ALERT_EMAIL DEPLOY_STORAGE_CONNECTION_STRING \
     DEPLOY_TELEGRAM_BOT_TOKEN DEPLOY_TELEGRAM_WEBHOOK_SECRET "$SELECTED_ENV"; do
   if [ -z "${!v:-}" ]; then missing="$missing $v"; fi
 done
@@ -48,7 +48,11 @@ if [ -n "$missing" ]; then echo "Missing required env:$missing" >&2; exit 1; fi
 
 export SELECTED_PROFILE="$SELECTOR"
 TEMPLATE_PATH="$TEMPLATE" OUT_PATH="$OUT" python3 - <<'PYEOF'
-import json, os
+import json, os, re
+from decimal import Decimal, InvalidOperation
+
+if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", os.environ["MONITORING_ALERT_EMAIL"]):
+    raise SystemExit("MONITORING_ALERT_EMAIL must be an email address")
 
 template = os.environ["TEMPLATE_PATH"]
 out = os.environ["OUT_PATH"]
@@ -58,6 +62,7 @@ with open(template) as f:
 subs = {
     "__FUNCTION_APP_NAME__": os.environ["FUNCTION_APP_NAME"],
     "__PRODUCTION_WEBHOOK_URL__": os.environ["PRODUCTION_WEBHOOK_URL"],
+    "__MONITORING_ALERT_EMAIL__": os.environ["MONITORING_ALERT_EMAIL"],
     "__STORAGE_CONNECTION_STRING__": os.environ["DEPLOY_STORAGE_CONNECTION_STRING"],
     "__TELEGRAM_BOT_TOKEN__": os.environ["DEPLOY_TELEGRAM_BOT_TOKEN"],
     "__TELEGRAM_WEBHOOK_SECRET__": os.environ["DEPLOY_TELEGRAM_WEBHOOK_SECRET"],
@@ -65,6 +70,14 @@ subs = {
     "__DEEPSEEK_API_KEY__": os.environ.get("DEPLOY_DEEPSEEK_API_KEY", ""),
 }
 doc = json.loads(raw)
+try:
+    cap_text = doc["parameters"]["monitoringDailyCapGb"]["value"]
+    cap = Decimal(cap_text)
+    numeric_cap = json.loads(cap_text)
+except (InvalidOperation, TypeError, ValueError):
+    raise SystemExit("monitoringDailyCapGb must be a JSON number string of at least 0.023 GB")
+if not isinstance(numeric_cap, (int, float)) or not cap.is_finite() or cap < Decimal("0.023"):
+    raise SystemExit("monitoringDailyCapGb must be a JSON number string of at least 0.023 GB")
 missing = [p for p in subs if p not in json.dumps(doc)]
 if missing:
     raise SystemExit(f"Template {template} lacks placeholders: {' '.join(missing)}")

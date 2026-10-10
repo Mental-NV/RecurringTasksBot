@@ -52,6 +52,44 @@ param expectedBotId string
 @description('Public production webhook URL, https://<app>.azurewebsites.net/api/webhook.')
 param webhookUrl string
 
+@description('Dedicated Log Analytics workspace for application telemetry and temporary diagnostic captures.')
+param monitoringWorkspaceName string
+
+@description('Workspace-based Application Insights component.')
+param applicationInsightsName string
+
+@description('Email action group for queue polling alerts.')
+param monitoringActionGroupName string
+
+@description('Operator email for monitoring notifications, supplied by the production GitHub environment.')
+@minLength(3)
+param monitoringAlertEmail string
+
+@description('Hourly ClientOtherError count above which each queue polling alert fires.')
+@minValue(1)
+param queuePollingErrorThreshold int = 100
+
+@description('Daily log ingestion cap in GB as a JSON number string; 0.1 is 100 MB/day.')
+param monitoringDailyCapGb string = '0.1'
+
+module monitoring './monitoring.bicep' = {
+  name: 'monitoring'
+  params: {
+    location: location
+    storageAccountName: storageAccountName
+    workspaceName: monitoringWorkspaceName
+    applicationInsightsName: applicationInsightsName
+    actionGroupName: monitoringActionGroupName
+    alertEmail: monitoringAlertEmail
+    queuePollingErrorThreshold: queuePollingErrorThreshold
+    dailyCapGb: monitoringDailyCapGb
+  }
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
+  name: applicationInsightsName
+}
+
 resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
   name: storageAccountName
 }
@@ -71,6 +109,10 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
   name: functionAppName
   location: location
   kind: 'functionapp'
+  // The component and workspace cap must exist before the host starts logging.
+  dependsOn: [
+    monitoring
+  ]
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
@@ -98,6 +140,42 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'FUNCTIONS_WORKER_RUNTIME'
           value: 'dotnet-isolated'
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
+        {
+          name: 'AzureFunctionsJobHost__logging__logLevel__default'
+          value: 'Warning'
+        }
+        {
+          name: 'AzureFunctionsJobHost__logging__logLevel__Host.Results'
+          value: 'Information'
+        }
+        {
+          name: 'AzureFunctionsJobHost__logging__logLevel__Host.Aggregator'
+          value: 'Information'
+        }
+        {
+          name: 'AzureFunctionsJobHost__logging__logLevel__Function'
+          value: 'Information'
+        }
+        {
+          name: 'AzureFunctionsJobHost__logging__applicationInsights__samplingSettings__isEnabled'
+          value: 'true'
+        }
+        {
+          name: 'AzureFunctionsJobHost__logging__applicationInsights__samplingSettings__maxTelemetryItemsPerSecond'
+          value: '2'
+        }
+        {
+          name: 'AzureFunctionsJobHost__logging__applicationInsights__samplingSettings__excludedTypes'
+          value: 'Request;Exception'
+        }
+        {
+          name: 'SCALE_CONTROLLER_LOGGING_ENABLED'
+          value: 'AppInsights:None'
         }
         {
           name: 'RecurringTasksBot__AzureWebJobsStorage'

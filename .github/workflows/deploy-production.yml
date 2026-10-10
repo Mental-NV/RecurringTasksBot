@@ -29,6 +29,9 @@ jobs:
         run: |
           bash tests/scripts/test-launch-local.sh
           bash tests/scripts/test-deploy-config.sh
+          bash tests/scripts/test-monitoring.sh
+      - name: Compile infrastructure (no Azure credentials)
+        run: az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
       - name: Publish and zip package
         run: |
           dotnet publish src/RecurringTasksBot.FunctionApp/RecurringTasksBot.FunctionApp.csproj \
@@ -55,7 +58,7 @@ jobs:
       - name: Check required variables
         run: |
           missing=""
-          for v in AZURE_RESOURCE_GROUP FUNCTION_APP_NAME PRODUCTION_WEBHOOK_URL; do
+          for v in AZURE_RESOURCE_GROUP FUNCTION_APP_NAME PRODUCTION_WEBHOOK_URL MONITORING_ALERT_EMAIL; do
             if [ -z "${!v:-}" ]; then missing="$missing $v"; fi
           done
           [ -n "$missing" ] && { echo "Missing required variables:$missing" >&2; exit 1; }
@@ -64,6 +67,7 @@ jobs:
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
           FUNCTION_APP_NAME: ${{ vars.FUNCTION_APP_NAME }}
           PRODUCTION_WEBHOOK_URL: ${{ vars.PRODUCTION_WEBHOOK_URL }}
+          MONITORING_ALERT_EMAIL: ${{ vars.MONITORING_ALERT_EMAIL }}
       - name: Inventory intended deployment (no credentials)
         run: |
           python3 - infra/main.parameters.json <<'EOF'
@@ -71,9 +75,13 @@ jobs:
           params = json.load(open(sys.argv[1]))["parameters"]
           for name in ["location", "functionAppName", "planName",
                        "storageAccountName", "taskHubName", "tableName",
-                       "expectedBotId", "webhookUrl", "llmActiveProfile"]:
+                       "expectedBotId", "webhookUrl", "llmActiveProfile",
+                       "monitoringWorkspaceName", "applicationInsightsName",
+                       "monitoringActionGroupName", "queuePollingErrorThreshold",
+                       "monitoringDailyCapGb"]:
               value = params[name]["value"]
-              print(f"{name}: {'<supplied at deploy time>' if value.startswith('__') else value}")
+              supplied = isinstance(value, str) and value.startswith('__')
+              print(f"{name}: {'<supplied at deploy time>' if supplied else value}")
           EOF
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -88,6 +96,7 @@ jobs:
         env:
           FUNCTION_APP_NAME: ${{ vars.FUNCTION_APP_NAME }}
           PRODUCTION_WEBHOOK_URL: ${{ vars.PRODUCTION_WEBHOOK_URL }}
+          MONITORING_ALERT_EMAIL: ${{ vars.MONITORING_ALERT_EMAIL }}
           DEPLOY_STORAGE_CONNECTION_STRING: ${{ secrets.RecurringTasksBot__AzureWebJobsStorage }}
           DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.RecurringTasksBot__Telegram__BotToken }}
           DEPLOY_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
@@ -100,6 +109,12 @@ jobs:
           resourceGroupName: ${{ vars.AZURE_RESOURCE_GROUP }}
           template: infra/main.bicep
           parameters: ${{ env.RESOLVED_PARAMS }}
+      - name: Set and verify monitoring daily caps
+        run: |
+          bash scripts/configure-monitoring.sh \
+            --resource-group "$AZURE_RESOURCE_GROUP" --parameters "$RESOLVED_PARAMS"
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       - name: Deploy app package
         run: |
           az functionapp deployment source config-zip \
