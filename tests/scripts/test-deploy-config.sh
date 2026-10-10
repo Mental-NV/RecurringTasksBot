@@ -200,15 +200,28 @@ done
   || fail "archive lacks extension assemblies"
 echo "PASS: deployment archive retains hidden extension content"
 
-# 5. launch-local platform hub: profile by default, override honored.
+# 5. Published host.json and launch-local resolve the same platform hub:
+#    profile by default, override honored. Resolve the file's app-setting
+#    reference separately from the runtime override to catch mismatches.
 SHIM="$(mktemp -d)"
 trap 'rm -rf "$SHIM" "$PUB"' EXIT
+export SHIM_PUBLISHED_HOST="$PUB/publish/host.json"
 cat > "$SHIM/curl" <<'EOF'
 #!/usr/bin/env bash
 echo '{"ok":true,"result":{"id":8898814847}}'
 EOF
 cat > "$SHIM/func" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
+python3 - <<'PY'
+import json, os
+host = json.load(open(os.environ['SHIM_PUBLISHED_HOST']))
+reference = host['extensions']['durableTask']['hubName']
+assert reference.startswith('%') and reference.endswith('%'), reference
+registered_hub = os.environ[reference[1:-1]]
+runtime_hub = os.environ['AzureFunctionsJobHost__extensions__durableTask__hubName']
+assert registered_hub == runtime_hub, (registered_hub, runtime_hub)
+PY
 echo "EFFECTIVE_HUB=$AzureFunctionsJobHost__extensions__durableTask__hubName"
 EOF
 chmod +x "$SHIM/curl" "$SHIM/func"
@@ -224,7 +237,7 @@ out=$(PATH="$SHIM:/usr/bin:/bin" bash scripts/launch-local.sh 2>/dev/null | grep
 out=$(TASK_HUB_NAME="ThrowawayHub" PATH="$SHIM:/usr/bin:/bin" bash scripts/launch-local.sh 2>/dev/null | grep EFFECTIVE_HUB) \
   || fail "launch-local with override did not reach func start"
 [ "${out#EFFECTIVE_HUB=}" = "ThrowawayHub" ] || fail "override platform hub wrong"
-echo "PASS: platform hub matches runtime profile by default and honors overrides"
+echo "PASS: published trigger configuration matches the runtime hub by default and with overrides"
 
 # 6. Operator --env resolution and credential guard.
 export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=devrecurringtasksbot;AccountKey=Zm9v;EndpointSuffix=core.windows.net"

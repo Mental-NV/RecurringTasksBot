@@ -9,6 +9,7 @@
   },
   "extensions": {
     "durableTask": {
+      "hubName": "%RecurringTasksBot__TaskHubName%",
       "maxConcurrentOrchestratorFunctions": 10,
       "maxConcurrentActivityFunctions": 20
     }

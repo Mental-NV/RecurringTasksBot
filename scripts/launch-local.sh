@@ -78,6 +78,9 @@ if [ -n "$ENV_HUB" ] && [ "$PROFILE_HUB" != "$ENV_HUB" ]; then
   exit 1
 fi
 EFFECTIVE_HUB="${TASK_HUB_NAME:-$PROFILE_HUB}"
+# host.json references this setting so trigger registration and the runtime
+# resolve the same hub, including explicit throwaway-hub overrides.
+export RecurringTasksBot__TaskHubName="$EFFECTIVE_HUB"
 export AzureFunctionsJobHost__extensions__durableTask__hubName="$EFFECTIVE_HUB"
 # The Functions host and the Durable extension both need the storage
 # connection under its plain name as well.

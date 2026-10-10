@@ -112,7 +112,7 @@ source metadata locally and is never sent as a search option.
 | --- | --- | --- |
 | `AzureFunctionsJobHost__extensions__durableTask__hubName` | Functions platform | Effective task hub; must equal the profile `TaskHubName` (asserted by `launch-local.sh`, `test-deploy-config.sh`, and the deploy workflow) |
 | `AzureWebJobsStorage` | Functions host | Same connection string under its plain name |
-| `host.json` | Functions platform | 10-minute timeout, Durable concurrency 10/20 |
+| `host.json` | Functions platform | Hub name references `%RecurringTasksBot__TaskHubName%` so trigger registration and the runtime use the same hub; 10-minute timeout, Durable concurrency 10/20 |
 | `infra/environments/development.json` | Operator scripts | Region, resource group, dev storage account; the `--env dev` credential guard reads the account from here |
 | `infra/environments/production.json` | Reference only | Azure IDs, resource group, region (production values are canonical in the parameter template) |
 | `infra/main.parameters.json` | Deployment (sole template) | Static values plus `__PLACEHOLDER__`s for externally supplied values; `resolve-deploy-parameters.sh` fills them from GitHub vars/secrets into a temp file passed to Bicep, which provisions the runtime app settings from it |
