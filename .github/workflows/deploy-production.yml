@@ -31,7 +31,11 @@ jobs:
           bash tests/scripts/test-deploy-config.sh
           bash tests/scripts/test-monitoring.sh
       - name: Compile infrastructure (no Azure credentials)
-        run: az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
+        run: |
+          az config set bicep.use_binary_from_path=false --output none
+          az bicep install --version "$(cat infra/bicep-version)"
+          az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
+          python3 tests/scripts/test-monitoring-template.py "$RUNNER_TEMP/main.json"
       - name: Publish and zip package
         run: |
           dotnet publish src/RecurringTasksBot.FunctionApp/RecurringTasksBot.FunctionApp.csproj \
@@ -102,12 +106,18 @@ jobs:
           DEPLOY_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.RecurringTasksBot__Telegram__WebhookSecret }}
           DEPLOY_LLM_API_KEY: ${{ secrets.RecurringTasksBot__Llm__OpenRouter__ApiKey }}
           DEPLOY_DEEPSEEK_API_KEY: ${{ secrets.RecurringTasksBot__Llm__DeepSeek__ApiKey }}
+      - name: Compile deployment template
+        run: |
+          az config set bicep.use_binary_from_path=false --output none
+          az bicep install --version "$(cat infra/bicep-version)"
+          az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
+          python3 tests/scripts/test-monitoring-template.py "$RUNNER_TEMP/main.json"
       - name: Deploy infrastructure (existing storage account)
         uses: azure/arm-deploy@v2
         with:
           scope: resourcegroup
           resourceGroupName: ${{ vars.AZURE_RESOURCE_GROUP }}
-          template: infra/main.bicep
+          template: ${{ runner.temp }}/main.json
           parameters: ${{ env.RESOLVED_PARAMS }}
       - name: Set and verify monitoring daily caps
         run: |

@@ -86,10 +86,6 @@ module monitoring './monitoring.bicep' = {
   }
 }
 
-resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
-  name: applicationInsightsName
-}
-
 resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
   name: storageAccountName
 }
@@ -109,10 +105,6 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
   name: functionAppName
   location: location
   kind: 'functionapp'
-  // The component and workspace cap must exist before the host starts logging.
-  dependsOn: [
-    monitoring
-  ]
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
@@ -143,7 +135,8 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-          value: appInsights.properties.ConnectionString
+          // Module output defers the read until the component has been created.
+          value: monitoring.outputs.applicationInsightsConnectionString
         }
         {
           name: 'AzureFunctionsJobHost__logging__logLevel__default'

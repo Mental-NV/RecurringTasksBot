@@ -23,6 +23,15 @@ scale-controller logging to `AppInsights:None` on each infrastructure deployment
 No permanent queue diagnostic setting or HTTP availability probe is created.
 Use [Monitoring](Monitoring.md) to start/stop temporary captures and query logs.
 
+The connection string is returned as a secure monitoring-module output. Consuming
+that output makes the Function App wait for the module's completion. A parent-side
+`existing` component lookup can run before the module creates it, even with an
+explicit dependency on the Function App. Secure outputs keep the connection
+string out of deployment logs/history and require Bicep 0.35.1 or newer.
+The workflows install the tested compiler version pinned in `infra/bicep-version`
+and deploy the compiled `main.json`; the ARM action does not recompile the source
+with another compiler. See [secure outputs](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/outputs#secure-outputs).
+
 ## OIDC and GitHub environment setup
 
 GitHub Environment `production` holds five secrets (storage connection
@@ -78,8 +87,9 @@ zip. Cloud steps run only after the gates pass.
    file (`scripts/resolve-deploy-parameters.sh` fills app name, webhook
    URL, and secrets from vars/secrets). The resolved file lives under
    `RUNNER_TEMP` and is never uploaded or logged.
-3. Deploy `infra/main.bicep` with the resolved parameter file onto the
-   existing production storage account, including the monitoring module.
+3. Compile `infra/main.bicep` using the pinned Bicep compiler, check its monitoring
+   dependencies and secure output, then deploy that `main.json` with the resolved
+   parameter file onto the existing production storage account.
 4. Run `scripts/configure-monitoring.sh` with the same parameter file. It sets
    Application Insights' 0.1 GB/day cap and reads back both caps, failing on a
    mismatch or CLI error. This runs immediately after infrastructure deployment,

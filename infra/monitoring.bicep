@@ -123,3 +123,8 @@ resource pollingAlerts 'Microsoft.Insights/metricAlerts@2018-03-01' = [for apiNa
     ]
   }
 }]
+
+// Read the component inside the module that creates it. A parent-side existing
+// reference can be evaluated before this module completes on a first deployment.
+@secure()
+output applicationInsightsConnectionString string = appInsights.properties.ConnectionString
