@@ -203,6 +203,20 @@ public sealed class TaskCommandTests
     }
 
     [Fact]
+    public void ExplicitAndEffectiveRendering_PreservesCyrillic()
+    {
+        Assert.True(TaskDefinitionParser.TryParseCreate(
+            """{"prompt": "Ежедельно расскажи новости", "schedule": {"cron": "0 0 9 * * *"}}""",
+            out var def, out _));
+        var explicitJson = TaskJsonRenderer.RenderExplicit(def!);
+        var effectiveJson = TaskJsonRenderer.RenderEffective(def!, TaskDefaults.Default);
+        Assert.Contains("Ежедельно расскажи новости", explicitJson);
+        Assert.Contains("Ежедельно расскажи новости", effectiveJson);
+        Assert.DoesNotContain(@"\u", explicitJson);
+        Assert.DoesNotContain(@"\u", effectiveJson);
+    }
+
+    [Fact]
     public void ListPrefixes_LengthenOnCollision()
     {
         var owned = new List<TaskRecord>

@@ -2,16 +2,23 @@
 // task-settings JSON structure only. Explicit preserves omissions; effective
 // fills timezone, once, and all parameters from current global defaults.
 // No envelope, IDs, revisions, state, or source labels inside the JSON.
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace RecurringTasksBot.Application;
 
 public static class TaskJsonRenderer
 {
+    private static readonly JsonWriterOptions IndentedRelaxed = new()
+    {
+        Indented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     public static string RenderExplicit(TaskDefinition definition)
     {
         using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        using (var writer = new Utf8JsonWriter(stream, IndentedRelaxed))
         {
             writer.WriteStartObject();
             writer.WriteString("prompt", definition.Prompt ?? string.Empty);
@@ -40,7 +47,7 @@ public static class TaskJsonRenderer
     {
         var effective = TaskDefinitionParser.ResolveEffective(definition, globals);
         using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        using (var writer = new Utf8JsonWriter(stream, IndentedRelaxed))
         {
             writer.WriteStartObject();
             writer.WriteString("prompt", effective.Prompt);
