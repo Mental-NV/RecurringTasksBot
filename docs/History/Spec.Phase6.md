@@ -1,7 +1,7 @@
 # Phase 6 implementation plan: LLM profiles and direct DeepSeek
 
-Status: ready for implementation; this document does not claim the code is implemented.  
-Updated: 2026-10-04.  
+Status: implemented  
+Updated: 2026-10-11.  
 
 ## 0. Execution instructions
 
