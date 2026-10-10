@@ -32,7 +32,9 @@ dotnet publish src/RecurringTasksBot.FunctionApp/RecurringTasksBot.FunctionApp.c
   targets).
 - `test-monitoring.sh` runs the post-deployment CLI step against a strict `az`
   shim: repeatable updates, mismatched/missing caps, CLI failures, and credential
-  redaction. It does not call Azure. Bicep compilation validates the resource
+  redaction. It also checks the provider preflight: all required namespaces,
+  missing registrations, regional registration in progress, and CLI failures.
+  It does not call Azure. Bicep compilation validates the resource
   definitions without deploying them.
 - `test-monitoring-template.py` inspects compiled ARM: the Function App must wait
   for the module output, the connection string must be secure, and verbose scale

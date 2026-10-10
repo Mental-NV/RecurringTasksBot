@@ -93,6 +93,8 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Check required Azure providers
+        run: bash scripts/check-azure-providers.sh
       - name: Resolve deployment parameters
         run: |
           bash scripts/resolve-deploy-parameters.sh --out "$RUNNER_TEMP/deploy-parameters.json"

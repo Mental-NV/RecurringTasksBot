@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise the post-deployment cap safeguard against a CLI shim, never Azure.
+# Exercise provider preflight and cap safeguards against a CLI shim, never Azure.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 python3 - <<'PY'
@@ -24,7 +24,15 @@ with open(os.environ["MONITORING_TEST_CALLS"], "a") as log:
     log.write(json.dumps(args) + "\\n")
 def option(name):
     return args[args.index(name) + 1]
-if args[:2] == ["extension", "add"]:
+if args[:2] == ["provider", "show"]:
+    assert option("--query") == "registrationState"
+    assert option("--output") == "tsv"
+    namespace = option("--namespace")
+    if os.environ.get("MONITORING_TEST_FAIL") == namespace:
+        sys.exit(42)
+    states = json.loads(os.environ.get("MONITORING_TEST_PROVIDER_STATES", '{}'))
+    print(states.get(namespace, "Registered"))
+elif args[:2] == ["extension", "add"]:
     assert option("--name") == "application-insights"
 elif args[:5] == ["monitor", "app-insights", "component", "billing", "update"]:
     assert option("--app") == "appi-fixture"
@@ -51,7 +59,8 @@ else:
     shim.chmod(0o755)
     base_env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
                 "MONITORING_TEST_CALLS": str(calls)}
-    for key in ("MONITORING_TEST_FAIL", "MONITORING_TEST_WORKSPACE_CAP", "MONITORING_TEST_BILLING"):
+    for key in ("MONITORING_TEST_FAIL", "MONITORING_TEST_WORKSPACE_CAP", "MONITORING_TEST_BILLING",
+                "MONITORING_TEST_PROVIDER_STATES"):
         base_env.pop(key, None)
 
     def run(*, changes=None, options=None, success=True, cli_calls=None):
@@ -84,5 +93,37 @@ else:
         parameters.write_text(json.dumps(params))
         run(success=False, cli_calls=0)
 
+    required = ["Microsoft.Web", "Microsoft.Storage", "Microsoft.Insights",
+                "Microsoft.OperationalInsights", "Microsoft.AlertsManagement"]
+
+    def preflight(*, changes=None, success=True):
+        calls.write_text("")
+        result = subprocess.run(["bash", "scripts/check-azure-providers.sh"],
+                                env={**base_env, **(changes or {})}, text=True, capture_output=True)
+        assert (result.returncode == 0) == success, (result.stdout, result.stderr)
+        records = [json.loads(line) for line in calls.read_text().splitlines()]
+        # Strict shim accepts only provider reads here, never registration or another mutation.
+        assert records == [["provider", "show", "--namespace", name, "--query",
+                            "registrationState", "--output", "tsv"] for name in required], records
+        return result.stdout + result.stderr
+
+    preflight()
+    for provider in required:
+        output = preflight(changes={"MONITORING_TEST_PROVIDER_STATES": json.dumps({provider: "NotRegistered"})},
+                           success=False)
+        assert f"az provider register --namespace {provider} --wait --output none" in output, output
+    preflight(changes={"MONITORING_TEST_PROVIDER_STATES": '{"Microsoft.AlertsManagement":"Registering"}'})
+    preflight(changes={"MONITORING_TEST_PROVIDER_STATES": '{"Microsoft.AlertsManagement":""}'}, success=False)
+    output = preflight(changes={"MONITORING_TEST_FAIL": "Microsoft.Insights"}, success=False)
+    assert "Cannot read Microsoft.Insights registration" in output, output
+    output = preflight(changes={"MONITORING_TEST_PROVIDER_STATES": json.dumps(
+        {name: "NotRegistered" for name in required})}, success=False)
+    assert output.count("A subscription operator should run:") == len(required), output
+
+    workflow = Path(".github/workflows/deploy-production.yml").read_text()
+    assert workflow.index("uses: azure/login@v2") < workflow.index("bash scripts/check-azure-providers.sh")
+    assert workflow.index("bash scripts/check-azure-providers.sh") < workflow.index("uses: azure/arm-deploy@v2")
+
 print("PASS: monitoring cap verification is repeatable, rejects invalid/mismatched caps, propagates CLI failures, and prints no credentials")
+print("PASS: provider preflight reports all missing registrations before deployment and only reads Azure metadata")
 PY

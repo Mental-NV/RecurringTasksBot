@@ -58,13 +58,31 @@ malformed email stops parameter resolution before any cloud change. The OIDC
 identity needs permission to create monitoring resources and update Application
 Insights billing features, such as Contributor on the resource group.
 
-If these providers are not registered, a subscription operator registers them
-once using Azure CLI:
+Before deployment, the workflow checks the registrations for `Microsoft.Web`,
+`Microsoft.Storage`, `Microsoft.Insights`, `Microsoft.OperationalInsights`, and
+`Microsoft.AlertsManagement`. The last provider supports Azure Monitor alerting
+even though the metric alert resources use the `Microsoft.Insights` namespace.
+For a manual deployment, run `bash scripts/check-azure-providers.sh` after login.
+The check only reads registrations and lists commands for any missing providers.
+
+If the monitoring providers are not registered, a subscription operator registers
+them once using Azure CLI in the deployment subscription:
 
 ```bash
+az account set --subscription 895bbba2-f762-48f6-83b9-e7029b6f3e96
 az provider register --namespace Microsoft.OperationalInsights --wait --output none
 az provider register --namespace Microsoft.Insights --wait --output none
+az provider register --namespace Microsoft.AlertsManagement --wait --output none
 ```
+
+Registration requires subscription-level `/register/action` permission (for
+example, Contributor or Owner on the subscription). The deployment identity can
+retain its resource-group role. Retry the failed deployment or operation after
+registration; keep the resources that already succeeded. See
+[Azure resource provider registration](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types).
+The preflight permits `Registering`, since readiness is regional; if Azure still
+reports a registration error in the target region, wait for registration to finish
+and retry.
 
 ## Workflow triggers
 
@@ -83,7 +101,7 @@ zip. Cloud steps run only after the gates pass.
    `FUNCTION_APP_NAME`, `PRODUCTION_WEBHOOK_URL`, `MONITORING_ALERT_EMAIL`) and
    inventory the intended deployment from `infra/main.parameters.json` without
    printing credentials.
-2. Log in with OIDC and resolve the parameter template into a temporary
+2. Log in with OIDC, check provider registrations, and resolve the parameter template into a temporary
    file (`scripts/resolve-deploy-parameters.sh` fills app name, webhook
    URL, and secrets from vars/secrets). The resolved file lives under
    `RUNNER_TEMP` and is never uploaded or logged.
